@@ -82,28 +82,58 @@ export interface CardItem {
   updatedAt: string;
 }
 
+export interface PlatformConnectionInfo {
+  status: 'VERIFIED' | 'NOT_CONNECTED' | 'ERROR' | 'APPROVAL_REQUIRED' | 'PARTNER_REQUIRED' | 'MANUAL_EXPORT';
+  authType: 'OAuth 2.0 (User PKCE)' | 'OAuth 2.0 (App)' | 'AT Protocol Session' | 'Official Bot Token' | 'Incoming Webhook' | 'Developer API Key' | 'Partner Authorization' | 'Manual Export';
+  environment: 'production' | 'sandbox';
+  accountId?: string;
+  accountName?: string;
+  storeOrChannel?: string;
+  grantedScopes: string[];
+  expiresAt?: string | null;
+  refreshAvailable: boolean;
+  readPermission: boolean;
+  writePermission: boolean;
+  listingPermission: boolean;
+  lastVerifiedAt?: string | null;
+  lastError?: string | null;
+  latencyMs?: number;
+}
+
 export interface PlatformConfigState {
   executionMode: 'real' | 'sandbox';
+  publishingMode: 'DRY_RUN' | 'LIVE_PUBLISHING';
   discordWebhookUrl: string;
   slackWebhookUrl: string;
   telegramBotToken: string;
   telegramChatId: string;
   ebayAppId: string;
   ebayDevToken: string;
+  ebayRefreshToken?: string;
+  ebayEnvironment?: 'production' | 'sandbox';
   whatnotApiKey: string;
   whatnotSellerUsername: string;
   whatnotLiveShowId: string;
   twitterApiKey: string;
   twitterBearerToken: string;
+  twitterAccessToken?: string;
+  twitterAccessSecret?: string;
   redditClientId: string;
   redditSecret: string;
+  redditAccessToken?: string;
+  redditRefreshToken?: string;
   blueskyHandle: string;
   blueskyAppPassword: string;
+  blueskyDid?: string;
   customWebhookUrl: string;
   zapierWebhookUrl: string;
+  tcgplayerPublicKey?: string;
+  tcgplayerPrivateKey?: string;
+  tcgplayerBearerToken?: string;
   autoSyncPriceChanges: boolean;
   autoSyncSoldStatus: boolean;
   platformsEnabled: Record<PlatformId, boolean>;
+  connectionStatuses?: Partial<Record<PlatformId, PlatformConnectionInfo>>;
 }
 
 export interface SyncLogEntry {

@@ -8,6 +8,12 @@ import {
   handleDispatchPlatform,
   handleTestConnection,
 } from './src/services/apiHandler';
+import {
+  handleGetVaultStatus,
+  handleSaveCredentials,
+  handleDisconnectPlatform,
+  handleVerifyAll,
+} from './src/services/tokenVaultService';
 
 dotenv.config();
 
@@ -39,6 +45,12 @@ async function startServer() {
 
   // Connection & Token Verification Endpoint
   app.post('/api/test-connection', handleTestConnection);
+
+  // Server-Side Token Vault & Account Connection Management
+  app.get('/api/vault/status', handleGetVaultStatus);
+  app.post('/api/vault/save-credentials', handleSaveCredentials);
+  app.post('/api/vault/disconnect', handleDisconnectPlatform);
+  app.post('/api/vault/verify-all', handleVerifyAll);
 
   // Vite Middleware & SPA Handling
   if (process.env.NODE_ENV !== 'production') {

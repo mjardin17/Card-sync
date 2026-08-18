@@ -145,3 +145,36 @@ export async function testConnectionApi(platform: PlatformId, config: PlatformCo
 
   return await response.json();
 }
+
+export async function getVaultStatusApi() {
+  const response = await fetch('/api/vault/status');
+  return await response.json();
+}
+
+export async function saveCredentialsApi(platform: PlatformId, credentials: Record<string, string>) {
+  const response = await fetch('/api/vault/save-credentials', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ platform, credentials }),
+  });
+  return await response.json();
+}
+
+export async function disconnectPlatformApi(platform: PlatformId) {
+  const response = await fetch('/api/vault/disconnect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ platform }),
+  });
+  return await response.json();
+}
+
+export async function verifyAllPlatformsApi(config: PlatformConfigState) {
+  const response = await fetch('/api/vault/verify-all', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config }),
+  });
+  return await response.json();
+}
+

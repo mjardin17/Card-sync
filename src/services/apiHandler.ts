@@ -1,5 +1,7 @@
 import { Request, Response } from 'express';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
+import { PlatformId, PlatformConfigState, CardItem } from '../types/card';
+import { verifyPlatformConnection } from './tokenVaultService';
 
 // Initialize Gemini with server-side API Key
 function getGeminiClient(): GoogleGenAI | null {
@@ -23,7 +25,6 @@ export async function handleIdentifyCard(req: Request, res: Response) {
 
     const ai = getGeminiClient();
     if (!ai) {
-      // Fallback smart heuristic response if API key is not yet set
       return res.json({
         success: true,
         isFallback: true,
@@ -41,45 +42,26 @@ Return a valid JSON object matching this structure:
 {
   "title": "Exact Full Card Name, Year, Set, Variant, and Grade",
   "category": "pokemon" | "sports" | "racing" | "crossover" | "mtg" | "yugioh" | "onepiece" | "other",
-  "subjectOrPlayer": "Player or Character name (e.g., Lewis Hamilton, Charizard, Pikachu GT-R, Charles Leclerc, Michael Jordan, Black Lotus)",
-  "setName": "Official Set Name (e.g., 1999 Base Set, 1986 Fleer, 2020 Panini Prizm, Alpha)",
-  "year": "Release year as string (e.g., 1999, 1986, 2020, 2023)",
-  "cardNumber": "Card # / number in set (e.g., 4/102, #57, #301)",
-  "variant": "Parallel / Variant / Foil type (e.g., 1st Edition Shadowless Holo, Silver Prizm Rookie, Foil, Refractor, Base)",
+  "subjectOrPlayer": "Player or Character name",
+  "setName": "Official Set Name",
+  "year": "Release year as string",
+  "cardNumber": "Card # in set",
+  "variant": "Parallel / Variant / Foil type",
   "grader": "PSA" | "BGS" | "CGC" | "SGC" | "Raw",
-  "gradeScore": "Grade score (e.g., 10 Gem Mint, 9.5 Mint, 8 NM-MT, Raw NM, Raw LP)",
-  "certNumber": "Certification number if visible on slab header or empty string",
-  "keyAttributes": ["List of key tags e.g. Rookie Card, 1st Edition, Holo Rare, On-Card Auto, Case Hit"],
+  "gradeScore": "Grade score",
+  "certNumber": "Certification number if visible or empty string",
+  "keyAttributes": ["List of key tags e.g. Rookie Card, 1st Edition, Holo Rare"],
   "estimatedWorth": {
-    "fairMarketValue": 450, // number in USD
+    "fairMarketValue": 450,
     "priceRangeLow": 380,
     "priceRangeHigh": 520,
-    "confidenceScore": 94, // 0-100 percentage
-    "trend30DayPercent": 6.5, // estimated 30-day percentage trend e.g. +6.5
+    "confidenceScore": 94,
+    "trend30DayPercent": 6.5,
     "liquidityRating": "High" | "Medium" | "Low",
     "popReportEstimate": "PSA 10 Pop: 240 / Total: 1,850",
     "recentSales": [
-      {
-        "date": "2026-07-28",
-        "platform": "eBay Auction",
-        "grade": "PSA 10",
-        "price": 465,
-        "title": "Recent verified sold comp title"
-      },
-      {
-        "date": "2026-07-14",
-        "platform": "PWCC / Goldin",
-        "grade": "PSA 10",
-        "price": 440,
-        "title": "Recent auction record comp"
-      },
-      {
-        "date": "2026-06-29",
-        "platform": "TCGplayer / eBay BIN",
-        "grade": "PSA 10",
-        "price": 455,
-        "title": "Fixed price comp"
-      }
+      { "date": "2026-07-28", "platform": "eBay Auction", "grade": "PSA 10", "price": 465, "title": "Recent verified sold comp title" },
+      { "date": "2026-07-14", "platform": "PWCC / Goldin", "grade": "PSA 10", "price": 440, "title": "Recent auction record comp" }
     ]
   },
   "recommendedListingPrice": 475,
@@ -90,7 +72,6 @@ Return a valid JSON object matching this structure:
 
     let parts: any[] = [{ text: promptText }];
     if (imageBase64) {
-      // Clean base64 header if present
       const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
       parts = [
         {
@@ -120,10 +101,10 @@ Return a valid JSON object matching this structure:
     });
   } catch (error: any) {
     console.error('Error identifying card with Gemini:', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to identify card',
-      fallback: generateSmartFallbackIdentification(req.body.cardHint || 'Card'),
+    return res.json({
+      success: true,
+      isFallback: true,
+      data: generateSmartFallbackIdentification(req.body?.cardHint || 'Card'),
     });
   }
 }
@@ -142,7 +123,7 @@ export async function handleGenerateMultiPlatformListings(req: Request, res: Res
     }
 
     const promptText = `
-You are an expert multi-channel social media manager and e-commerce copywriter specializing in collectible trading cards.
+You are an expert multi-channel e-commerce copywriter specializing in collectible trading cards.
 
 Create fully optimized, tailored cross-post listings for the following card across all requested platforms:
 Card Data:
@@ -152,9 +133,9 @@ User Custom Instructions: "${customInstructions || 'Optimize for maximum buyer a
 
 Generate tailored content for:
 1. **ebay**: title (<=80 chars, high-volume SEO keywords), itemSpecifics key-value object, descriptionHtml (clean, professional eBay description with shipping terms, return policy, authenticity assurance), startingPrice, buyItNowPrice, bestOfferEnabled (boolean).
-2. **discord**: embedTitle, embedDescription (Markdown with price, condition, comps summary, shipping info), embedColorHex (e.g. #5865F2 or rarity gold #F1C40F), fields (array of {name, value, inline}), footerText.
-3. **reddit**: title (standard r/pkmntcgtrades / r/sportscards format like "[US, US] [H] 1999 Charizard Base Set Holo PSA 9 [W] PayPal / Trade"), bodyMarkdown (structured with [H] Have, [W] Want, Pricing, Condition, Timestamp details, PayPal Goods & Services only), subredditSuggestions (array of strings).
-4. **twitter**: tweetText (max 280 chars with punchy hook, price, key features, relevant hashtags like #TheHobby #PokemonTCG #CardsForSale, CTA).
+2. **discord**: embedTitle, embedDescription (Markdown with price, condition, comps summary, shipping info), embedColorHex (#F1C40F), fields (array of {name, value, inline}), footerText.
+3. **reddit**: title (standard r/pkmntcgtrades / r/sportscards format like "[US, US] [H] Card Title [W] PayPal / Trade"), bodyMarkdown (structured with [H] Have, [W] Want, Pricing, Condition, Timestamp details, PayPal Goods & Services only), subredditSuggestions (array of strings).
+4. **twitter**: tweetText (max 280 chars with punchy hook, price, key features, relevant hashtags like #TheHobby #CardsForSale, CTA).
 5. **slack**: blocksJson (Block kit array structure with Header, Section with mrkdwn, and Context divider).
 6. **telegram**: messageHtml (HTML formatted with <b>, <i>, <code> tags, instant checkout call, contact link).
 7. **bluesky**: postText (max 300 chars formatted with tags and link callout).
@@ -180,762 +161,458 @@ Return a single JSON object with platform keys: ebay, discord, reddit, twitter, 
     });
   } catch (error: any) {
     console.error('Error generating listings:', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-      fallback: generateSmartPlatformListings(req.body.card),
+    return res.json({
+      success: true,
+      isFallback: true,
+      data: generateSmartPlatformListings(req.body.card),
     });
   }
 }
 
-export async function handleDispatchPlatform(req: Request, res: Response) {
+/**
+ * Real Test Connection handler
+ */
+export async function handleTestConnection(req: Request, res: Response) {
   try {
-    const { platform, config, card, listingContent, action = 'post' } = req.body;
-    const isRealMode = config?.executionMode !== 'sandbox';
-    const startTime = Date.now();
+    const { platform, config } = req.body as { platform: PlatformId; config: PlatformConfigState };
 
-    // 1. Discord Live Webhook
-    if (platform === 'discord') {
-      if (config?.discordWebhookUrl) {
-        const webhookUrl = config.discordWebhookUrl;
+    if (!platform) {
+      return res.status(400).json({ success: false, error: 'Platform identifier is required.' });
+    }
+
+    const creds: Record<string, string> = {};
+    if (config) {
+      if (config.discordWebhookUrl) creds.discordWebhookUrl = config.discordWebhookUrl;
+      if (config.telegramBotToken) {
+        creds.telegramBotToken = config.telegramBotToken;
+        creds.telegramChatId = config.telegramChatId;
+      }
+      if (config.blueskyHandle) {
+        creds.blueskyHandle = config.blueskyHandle;
+        creds.blueskyAppPassword = config.blueskyAppPassword;
+      }
+      if (config.ebayDevToken) {
+        creds.ebayDevToken = config.ebayDevToken;
+        creds.ebayEnvironment = config.ebayEnvironment || 'production';
+      }
+      if (config.twitterBearerToken) creds.twitterBearerToken = config.twitterBearerToken;
+      if (config.redditClientId) {
+        creds.redditClientId = config.redditClientId;
+        creds.redditSecret = config.redditSecret;
+      }
+      if (config.slackWebhookUrl) creds.slackWebhookUrl = config.slackWebhookUrl;
+      if (config.zapierWebhookUrl) creds.zapierWebhookUrl = config.zapierWebhookUrl;
+      if (config.customWebhookUrl) creds.customWebhookUrl = config.customWebhookUrl;
+      if (config.whatnotApiKey) {
+        creds.whatnotApiKey = config.whatnotApiKey;
+        creds.whatnotSellerUsername = config.whatnotSellerUsername;
+      }
+      if (config.tcgplayerPublicKey) creds.tcgplayerPublicKey = config.tcgplayerPublicKey;
+      if (config.tcgplayerPrivateKey) creds.tcgplayerPrivateKey = config.tcgplayerPrivateKey;
+    }
+
+    const verificationInfo = await verifyPlatformConnection(platform, creds);
+
+    const isConnected = verificationInfo.status === 'VERIFIED';
+    return res.json({
+      success: isConnected,
+      status: verificationInfo.status,
+      connectionInfo: verificationInfo,
+      message: isConnected 
+        ? `${platform.toUpperCase()} API verified successfully: Account ${verificationInfo.accountName || verificationInfo.accountId}`
+        : verificationInfo.lastError || `${platform.toUpperCase()} is not yet authorized.`,
+      latencyMs: verificationInfo.latencyMs,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      status: 'ERROR',
+      error: err.message,
+    });
+  }
+}
+
+/**
+ * Multi-Platform Dispatch Engine
+ * Respects DRY_RUN publishing safety mode and real verified credentials
+ */
+export async function handleDispatchPlatform(req: Request, res: Response) {
+  const startTime = Date.now();
+  try {
+    const { platform, config, card, listingContent, action = 'post' } = req.body as {
+      platform: PlatformId;
+      config: PlatformConfigState;
+      card: CardItem;
+      listingContent?: any;
+      action?: 'post' | 'update' | 'sold';
+    };
+
+    const isDryRun = (config?.publishingMode || 'DRY_RUN') === 'DRY_RUN';
+
+    // 1. Dry Run Mode Safety Guard
+    if (isDryRun) {
+      const generated = listingContent?.[platform] || generateSmartPlatformListings(card)[platform as keyof ReturnType<typeof generateSmartPlatformListings>];
+      return res.json({
+        success: true,
+        platform,
+        status: 'dry_run_verified',
+        mode: 'DRY_RUN',
+        message: `Safety Shield Active: [DRY_RUN] Verified payload format for ${platform.toUpperCase()}. Live publishing withheld until production toggle is armed.`,
+        payload: generated,
+        latencyMs: Date.now() - startTime,
+      });
+    }
+
+    // 2. Real Live Dispatch
+    switch (platform) {
+      case 'discord': {
+        if (!config?.discordWebhookUrl) {
+          return res.status(400).json({
+            success: false,
+            platform,
+            status: 'missing_credentials',
+            message: 'Discord Webhook URL is required in Token Vault.',
+          });
+        }
+
         const embedPayload = {
-          username: 'OmniCard Sync Bot',
+          username: 'BossLister Card Sync',
           avatar_url: 'https://images.unsplash.com/photo-1613771404784-3a5686aa2be3?w=128&auto=format&fit=crop&q=80',
-          content: action === 'sold' 
+          content: action === 'sold'
             ? `🔴 **CARD SOLD / REMOVED** - ${card.title} has been marked as SOLD.`
-            : action === 'update' 
+            : action === 'update'
             ? `🔄 **PRICE UPDATE** - ${card.title} is now $${card.askingPrice}!`
             : `✨ **NEW CARD LISTED FOR SALE**`,
           embeds: [
             {
               title: listingContent?.discord?.embedTitle || `${card.title} - $${card.askingPrice}`,
-              description: listingContent?.discord?.embedDescription || `${card.subjectOrPlayer} | ${card.setName} (${card.year})\n\n**Asking Price:** $${card.askingPrice}\n**Fair Market Value:** $${card.estimatedWorth?.fairMarketValue || card.askingPrice}\n**Condition / Grade:** ${card.grader} ${card.gradeScore}`,
+              description: listingContent?.discord?.embedDescription || `${card.subjectOrPlayer} | ${card.setName} (${card.year})\n\n**Asking Price:** $${card.askingPrice}\n**Grade:** ${card.grader} ${card.gradeScore}`,
               color: action === 'sold' ? 0xE74C3C : action === 'update' ? 0x3498DB : 0xF1C40F,
               fields: listingContent?.discord?.fields || [
                 { name: '💰 Price', value: `$${card.askingPrice}`, inline: true },
-                { name: '📊 Est. Market Value', value: `$${card.estimatedWorth?.fairMarketValue || card.askingPrice}`, inline: true },
                 { name: '⭐ Grade', value: `${card.grader} ${card.gradeScore}`, inline: true },
-                { name: '📦 Shipping', value: 'Bubble Mailer with Tracking (BMWT)', inline: false },
               ],
               image: card.frontImage ? { url: card.frontImage } : undefined,
-              footer: {
-                text: `OmniCard Sync • Mode: LIVE • ${new Date().toLocaleTimeString()}`,
-              },
               timestamp: new Date().toISOString(),
             },
           ],
         };
 
-        try {
-          const fetchRes = await fetch(webhookUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(embedPayload),
-          });
+        const fetchRes = await fetch(config.discordWebhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(embedPayload),
+        });
 
-          const latency = Date.now() - startTime;
-          if (fetchRes.ok) {
-            return res.json({
-              success: true,
-              platform,
-              status: 'live_synced',
-              statusCode: fetchRes.status,
-              message: 'Real Mode: Live rich embed dispatched directly to your Discord channel.',
-              latencyMs: latency,
-              payload: embedPayload,
-            });
-          }
-          // If relay webhook or external network code, return relay synced receipt
-          return res.json({
-            success: true,
+        if (!fetchRes.ok) {
+          const errText = await fetchRes.text().catch(() => fetchRes.statusText);
+          return res.status(fetchRes.status).json({
+            success: false,
             platform,
-            status: 'live_synced',
-            statusCode: 200,
-            message: 'Real Mode Gateway: Discord drop embed processed and queued to channel relay.',
-            latencyMs: latency || 142,
-            payload: embedPayload,
-          });
-        } catch (err: any) {
-          return res.json({
-            success: true,
-            platform,
-            status: 'live_synced',
-            statusCode: 200,
-            message: 'Real Mode Gateway: Discord drop embed processed and queued to channel relay.',
-            latencyMs: Date.now() - startTime,
-            payload: embedPayload,
+            status: 'error',
+            message: `Discord Webhook failed with status ${fetchRes.status}: ${errText}`,
           });
         }
-      } else if (isRealMode) {
+
         return res.json({
-          success: false,
+          success: true,
           platform,
-          status: 'missing_credentials',
-          message: 'Real Mode Active: Please attach your Discord Webhook URL in Token Vault to broadcast live.',
-          latencyMs: 15,
+          status: 'live_synced',
+          message: 'Live rich embed dispatched directly to your Discord channel.',
+          latencyMs: Date.now() - startTime,
         });
       }
-    }
 
-    // 2. Slack Live Incoming Webhook
-    if (platform === 'slack') {
-      if (config?.slackWebhookUrl) {
-        const webhookUrl = config.slackWebhookUrl;
+      case 'telegram': {
+        if (!config?.telegramBotToken || !config?.telegramChatId) {
+          return res.status(400).json({
+            success: false,
+            platform,
+            status: 'missing_credentials',
+            message: 'Telegram Bot Token and Chat ID are required.',
+          });
+        }
+
+        const tgText = `<b>🃏 ${card.title}</b>\n\n` +
+          `<b>💰 Price:</b> $${card.askingPrice}\n` +
+          `<b>⭐ Grade:</b> ${card.grader} ${card.gradeScore}\n` +
+          `<b>📦 Set:</b> ${card.setName} (${card.year})\n\n` +
+          `<i>Action: ${action.toUpperCase()}</i>`;
+
+        const tgUrl = `https://api.telegram.org/bot${config.telegramBotToken}/sendMessage`;
+        const tgRes = await fetch(tgUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: config.telegramChatId,
+            text: tgText,
+            parse_mode: 'HTML',
+          }),
+        });
+
+        const tgData: any = await tgRes.json().catch(() => ({ ok: false }));
+        if (!tgData.ok) {
+          return res.status(400).json({
+            success: false,
+            platform,
+            status: 'error',
+            message: `Telegram Error: ${tgData.description || 'Failed to dispatch'}`,
+          });
+        }
+
+        return res.json({
+          success: true,
+          platform,
+          status: 'live_synced',
+          message: 'Published live announcement to Telegram channel.',
+          latencyMs: Date.now() - startTime,
+        });
+      }
+
+      case 'bluesky': {
+        if (!config?.blueskyHandle || !config?.blueskyAppPassword) {
+          return res.status(400).json({
+            success: false,
+            platform,
+            status: 'missing_credentials',
+            message: 'Bluesky Handle and App Password required.',
+          });
+        }
+
+        // 1. Create Session
+        const sessionRes = await fetch('https://bsky.social/xrpc/com.atproto.server.createSession', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            identifier: config.blueskyHandle.trim(),
+            password: config.blueskyAppPassword.trim(),
+          }),
+        });
+
+        if (!sessionRes.ok) {
+          const sessionErr: any = await sessionRes.json().catch(() => ({}));
+          return res.status(sessionRes.status).json({
+            success: false,
+            platform,
+            status: 'auth_failed',
+            message: `AT Protocol Auth Failed: ${sessionErr.message || 'Invalid handle/password'}`,
+          });
+        }
+
+        const sessionData: any = await sessionRes.json();
+        const postText = `🃏 ${action === 'sold' ? '[SOLD]' : '[AVAILABLE]'} ${card.title}\nGrade: ${card.grader} ${card.gradeScore}\nPrice: $${card.askingPrice}\n\n#TheHobby #CardCollector`;
+
+        // 2. Create Record
+        const recordRes = await fetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${sessionData.accessJwt}`,
+          },
+          body: JSON.stringify({
+            repo: sessionData.did,
+            collection: 'app.bsky.feed.post',
+            record: {
+              $type: 'app.bsky.feed.post',
+              text: postText,
+              createdAt: new Date().toISOString(),
+            },
+          }),
+        });
+
+        const recordData: any = await recordRes.json().catch(() => ({}));
+        if (!recordRes.ok) {
+          return res.status(recordRes.status).json({
+            success: false,
+            platform,
+            status: 'error',
+            message: `Bluesky Post Failed: ${recordData.message || 'Error creating post'}`,
+          });
+        }
+
+        return res.json({
+          success: true,
+          platform,
+          status: 'live_synced',
+          listingId: recordData.uri,
+          message: 'Post published to Bluesky network.',
+          latencyMs: Date.now() - startTime,
+        });
+      }
+
+      case 'slack': {
+        if (!config?.slackWebhookUrl) {
+          return res.status(400).json({
+            success: false,
+            platform,
+            status: 'missing_credentials',
+            message: 'Slack Webhook URL required.',
+          });
+        }
+
         const slackPayload = {
-          text: `OmniCard [LIVE]: ${card.title} - $${card.askingPrice}`,
+          text: `BossLister: ${card.title} - $${card.askingPrice}`,
           blocks: [
             {
               type: 'header',
-              text: {
-                type: 'plain_text',
-                text: `🃏 ${card.title}`,
-                emoji: true,
-              },
+              text: { type: 'plain_text', text: `🃏 ${card.title}`, emoji: true },
             },
             {
               type: 'section',
               fields: [
                 { type: 'mrkdwn', text: `*Price:*\n$${card.askingPrice}` },
                 { type: 'mrkdwn', text: `*Grade:*\n${card.grader} ${card.gradeScore}` },
-                { type: 'mrkdwn', text: `*Set:*\n${card.setName} (${card.year})` },
-                { type: 'mrkdwn', text: `*Est. Worth:*\n$${card.estimatedWorth?.fairMarketValue || card.askingPrice}` },
               ],
             },
           ],
         };
 
-        try {
-          const fetchRes = await fetch(webhookUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(slackPayload),
-          });
-          return res.json({
-            success: true,
+        const fetchRes = await fetch(config.slackWebhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(slackPayload),
+        });
+
+        if (!fetchRes.ok) {
+          return res.status(fetchRes.status).json({
+            success: false,
             platform,
-            status: 'live_synced',
-            statusCode: fetchRes.ok ? fetchRes.status : 200,
-            message: 'Real Mode: Published live card drop directly to Slack channel.',
-            latencyMs: Date.now() - startTime,
-            payload: slackPayload,
-          });
-        } catch (err: any) {
-          return res.json({
-            success: true,
-            platform,
-            status: 'live_synced',
-            statusCode: 200,
-            message: 'Real Mode Gateway: Published live card drop directly to Slack channel.',
-            latencyMs: Date.now() - startTime,
-            payload: slackPayload,
+            status: 'error',
+            message: `Slack error: ${fetchRes.statusText}`,
           });
         }
-      } else if (isRealMode) {
+
         return res.json({
-          success: false,
+          success: true,
           platform,
-          status: 'missing_credentials',
-          message: 'Real Mode Active: Please attach your Slack Webhook URL in Token Vault.',
-          latencyMs: 15,
+          status: 'live_synced',
+          message: 'Posted update to Slack deals channel.',
+          latencyMs: Date.now() - startTime,
         });
       }
-    }
 
-    // 3. Telegram Live Bot Dispatch
-    if (platform === 'telegram') {
-      if (config?.telegramBotToken && config?.telegramChatId) {
-        const botToken = config.telegramBotToken;
-        const chatId = config.telegramChatId;
-        const tgText = `<b>🃏 ${card.title}</b>\n\n` +
-          `<b>💰 Asking Price:</b> $${card.askingPrice}\n` +
-          `<b>📊 Fair Market Value:</b> $${card.estimatedWorth?.fairMarketValue || card.askingPrice}\n` +
-          `<b>⭐ Grade:</b> ${card.grader} ${card.gradeScore}\n` +
-          `<b>📦 Set:</b> ${card.setName} (${card.year})\n\n` +
-          `<i>Status: ${action === 'sold' ? '🔴 SOLD' : action === 'update' ? '🔄 PRICE UPDATED' : '🟢 ACTIVE LISTING'}</i>\n` +
-          `<i>Dispatched via OmniCard Real Mode Engine</i>`;
-
-        try {
-          const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              chat_id: chatId,
-              text: tgText,
-              parse_mode: 'HTML',
-            }),
-          });
-          const tgData = await tgRes.json();
-          if (tgData.ok) {
-            return res.json({
-              success: true,
-              platform,
-              status: 'live_synced',
-              message: 'Real Mode: Message sent live to your Telegram chat / channel.',
-              latencyMs: Date.now() - startTime,
-              payload: { chatId, tgText },
-            });
-          }
-          return res.json({
-            success: true,
+      case 'zapier': {
+        if (!config?.zapierWebhookUrl) {
+          return res.status(400).json({
+            success: false,
             platform,
-            status: 'live_synced',
-            statusCode: 200,
-            message: `Real Mode Gateway: Dispatched live card drop to Telegram (${chatId}).`,
-            latencyMs: Date.now() - startTime,
-            payload: { chatId, tgText },
-          });
-        } catch (err: any) {
-          return res.json({
-            success: true,
-            platform,
-            status: 'live_synced',
-            statusCode: 200,
-            message: `Real Mode Gateway: Dispatched live card drop to Telegram (${chatId}).`,
-            latencyMs: Date.now() - startTime,
-            payload: { chatId, tgText },
+            status: 'missing_credentials',
+            message: 'Zapier Catch Hook URL required.',
           });
         }
-      } else if (isRealMode) {
-        return res.json({
-          success: false,
-          platform,
-          status: 'missing_credentials',
-          message: 'Real Mode Active: Please provide Telegram Bot Token & Chat ID in Token Vault.',
-          latencyMs: 15,
-        });
-      }
-    }
 
-    // 4. Bluesky AT Protocol Real Post
-    if (platform === 'bluesky') {
-      if (config?.blueskyHandle && config?.blueskyAppPassword) {
-        try {
-          // Authenticate AT Protocol Session
-          const authRes = await fetch('https://bsky.social/xrpc/com.atproto.server.createSession', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              identifier: config.blueskyHandle,
-              password: config.blueskyAppPassword,
-            }),
-          });
-          const authData = await authRes.json();
-
-          if (authRes.ok && authData.accessJwt) {
-            const postText = listingContent?.bluesky?.postText || `🃏 Available: ${card.title} (${card.grader} ${card.gradeScore}) - $${card.askingPrice} #TheHobby #CardCollector`;
-            const recordRes = await fetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${authData.accessJwt}`,
-              },
-              body: JSON.stringify({
-                repo: authData.did,
-                collection: 'app.bsky.feed.post',
-                record: {
-                  $type: 'app.bsky.feed.post',
-                  text: postText,
-                  createdAt: new Date().toISOString(),
-                },
-              }),
-            });
-            const recordData = await recordRes.json();
-
-            return res.json({
-              success: true,
-              platform,
-              status: 'live_synced',
-              message: 'Real Mode: Live post published to Bluesky network!',
-              latencyMs: Date.now() - startTime,
-              payload: recordData,
-            });
-          }
-
-          return res.json({
-            success: true,
-            platform,
-            status: 'live_synced',
-            statusCode: 200,
-            listingId: `BSKY-POST-${Math.floor(100000 + Math.random() * 900000)}`,
-            message: `Real Mode Gateway: Live post broadcast to Bluesky network (@${config.blueskyHandle})!`,
-            latencyMs: Date.now() - startTime,
-            payload: { handle: config.blueskyHandle, post: card.title },
-          });
-        } catch (err: any) {
-          return res.json({
-            success: true,
-            platform,
-            status: 'live_synced',
-            statusCode: 200,
-            listingId: `BSKY-POST-${Math.floor(100000 + Math.random() * 900000)}`,
-            message: `Real Mode Gateway: Live post broadcast to Bluesky network (@${config.blueskyHandle})!`,
-            latencyMs: Date.now() - startTime,
-            payload: { handle: config.blueskyHandle, post: card.title },
-          });
-        }
-      } else if (isRealMode) {
-        return res.json({
-          success: false,
-          platform,
-          status: 'missing_credentials',
-          message: 'Real Mode Active: Enter Bluesky Handle & App Password in Token Vault to broadcast live.',
-          latencyMs: 15,
-        });
-      }
-    }
-
-    // 5. Twitter / X API v2 Real Post
-    if (platform === 'twitter') {
-      if (config?.twitterBearerToken) {
-        try {
-          const tweetText = listingContent?.twitter?.tweetText || `🚨 FS: ${card.title} (${card.grader} ${card.gradeScore})\n💰 $${card.askingPrice} shipped BMWT!\n\n#TheHobby #CardCollector #CardsForSale`;
-          const twRes = await fetch('https://api.twitter.com/2/tweets', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${config.twitterBearerToken}`,
-            },
-            body: JSON.stringify({ text: tweetText }),
-          });
-          const twData = await twRes.json();
-          if (twRes.ok) {
-            return res.json({
-              success: true,
-              platform,
-              status: 'live_synced',
-              message: 'Real Mode: Tweet posted live to X/Twitter account!',
-              latencyMs: Date.now() - startTime,
-              payload: twData,
-            });
-          }
-          return res.json({
-            success: true,
-            platform,
-            status: 'live_synced',
-            statusCode: 200,
-            listingId: `TW-TWEET-${Math.floor(100000000000 + Math.random() * 900000000000)}`,
-            message: 'Real Mode Gateway: Tweet authenticated and broadcast to X/Twitter feed!',
-            latencyMs: Date.now() - startTime,
-            payload: { text: tweetText },
-          });
-        } catch (err: any) {
-          return res.json({
-            success: true,
-            platform,
-            status: 'live_synced',
-            statusCode: 200,
-            listingId: `TW-TWEET-${Math.floor(100000000000 + Math.random() * 900000000000)}`,
-            message: 'Real Mode Gateway: Tweet authenticated and broadcast to X/Twitter feed!',
-            latencyMs: Date.now() - startTime,
-            payload: { title: card.title, price: card.askingPrice },
-          });
-        }
-      } else if (isRealMode) {
-        return res.json({
-          success: false,
-          platform,
-          status: 'missing_credentials',
-          message: 'Real Mode Active: Provide Twitter Bearer Token in Token Vault to post live.',
-          latencyMs: 15,
-        });
-      }
-    }
-
-    // 6. Custom Webhook & Zapier Live Dispatch
-    if (platform === 'webhook' || platform === 'zapier') {
-      const targetUrl = config?.customWebhookUrl || config?.zapierWebhookUrl;
-      if (targetUrl) {
-        const customPayload = {
-          event: `card.${action}`,
-          mode: 'real_production',
+        const payload = {
+          event: action,
           timestamp: new Date().toISOString(),
-          cardId: card.id,
-          card: card,
-          listingContent: listingContent?.[platform] || listingContent,
+          card: {
+            id: card.id,
+            title: card.title,
+            price: card.askingPrice,
+            grader: card.grader,
+            grade: card.gradeScore,
+            category: card.category,
+          },
         };
 
-        try {
-          const resObj = await fetch(targetUrl, {
-            method: 'POST',
-            headers: { 
-              'Content-Type': 'application/json', 
-              'User-Agent': 'OmniCardSync-Production/1.0',
-            },
-            body: JSON.stringify(customPayload),
-          });
-          return res.json({
-            success: true,
+        const fetchRes = await fetch(config.zapierWebhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        if (!fetchRes.ok) {
+          return res.status(fetchRes.status).json({
+            success: false,
             platform,
-            status: 'live_synced',
-            statusCode: resObj.ok ? resObj.status : 200,
-            message: `Real Mode: Dispatched live event to webhook (${targetUrl}) with status HTTP ${resObj.status}`,
-            latencyMs: Date.now() - startTime,
-            payload: customPayload,
-          });
-        } catch (err: any) {
-          return res.json({
-            success: true,
-            platform,
-            status: 'live_synced',
-            statusCode: 200,
-            message: `Real Mode Gateway: Dispatched live event to webhook (${targetUrl}) with status HTTP 200`,
-            latencyMs: Date.now() - startTime,
-            payload: customPayload,
+            status: 'error',
+            message: `Zapier webhook error: ${fetchRes.statusText}`,
           });
         }
-      } else if (isRealMode) {
-        return res.json({
-          success: false,
-          platform,
-          status: 'missing_credentials',
-          message: 'Real Mode Active: Enter your Custom Webhook or Zapier URL in Token Vault.',
-          latencyMs: 15,
-        });
-      }
-    }
 
-    // 7. eBay Real Token Dispatch
-    if (platform === 'ebay') {
-      if (config?.ebayDevToken) {
         return res.json({
           success: true,
           platform,
           status: 'live_synced',
-          statusCode: 200,
-          listingId: `EBAY-LIVE-${Math.floor(1000000000 + Math.random() * 9000000000)}`,
-          message: 'Real Mode: Verified listing draft formatted for eBay Marketplace API.',
+          message: 'Dispatched event to Zapier Catch Hook.',
           latencyMs: Date.now() - startTime,
-          payload: listingContent?.ebay || { title: card.title, price: card.askingPrice },
-        });
-      } else if (isRealMode) {
-        return res.json({
-          success: false,
-          platform,
-          status: 'missing_credentials',
-          message: 'Real Mode Active: Attach your eBay Dev Token or App ID in Token Vault.',
-          latencyMs: 15,
         });
       }
-    }
 
-    // 8. Whatnot Live Show & Marketplace Dispatch
-    if (platform === 'whatnot') {
-      if (config?.whatnotApiKey) {
-        const whatnotPayload = {
-          title: card.title,
-          category: card.category === 'pokemon' ? 'Pokemon Cards' : 'Sports Cards',
-          price: card.askingPrice,
-          startingBid: 1, // $1 sudden death start
-          buyItNowPrice: card.askingPrice,
-          suddenDeathSeconds: 30,
-          lotType: 'livestream_auction_lot',
-          showId: config?.whatnotLiveShowId || 'active_show',
-          sellerUsername: config?.whatnotSellerUsername || 'verified_seller',
-          condition: `${card.grader} ${card.gradeScore}`,
-          certNumber: card.certNumber,
-          images: [card.frontImage, card.backImage].filter(Boolean),
+      case 'webhook': {
+        if (!config?.customWebhookUrl) {
+          return res.status(400).json({
+            success: false,
+            platform,
+            status: 'missing_credentials',
+            message: 'Custom HTTPS Webhook URL required.',
+          });
+        }
+
+        const payload = {
+          event: action,
+          timestamp: new Date().toISOString(),
+          card,
         };
 
+        const fetchRes = await fetch(config.customWebhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        if (!fetchRes.ok) {
+          return res.status(fetchRes.status).json({
+            success: false,
+            platform,
+            status: 'error',
+            message: `Custom webhook error: ${fetchRes.statusText}`,
+          });
+        }
+
         return res.json({
           success: true,
           platform,
           status: 'live_synced',
-          statusCode: 200,
-          listingId: `WN-LOT-${Math.floor(100000 + Math.random() * 900000)}`,
-          message: `Real Mode: Queued to Whatnot Live Show (@${config.whatnotSellerUsername || 'seller'}) & Buy-It-Now Store!`,
+          message: 'Dispatched payload to Custom Webhook.',
           latencyMs: Date.now() - startTime,
-          payload: whatnotPayload,
         });
-      } else if (isRealMode) {
+      }
+
+      case 'mercari': {
         return res.json({
+          success: true,
+          platform: 'mercari',
+          status: 'manual_export_ready',
+          message: 'Mercari formatted listing generated. Copy to clipboard for posting.',
+          payload: generateSmartPlatformListings(card).mercari,
+          latencyMs: Date.now() - startTime,
+        });
+      }
+
+      default: {
+        return res.status(400).json({
           success: false,
           platform,
-          status: 'missing_credentials',
-          message: 'Real Mode Active: Enter your Whatnot API Key / Seller Token in Token Vault.',
-          latencyMs: 15,
+          status: 'unsupported_or_unverified',
+          message: `${platform.toUpperCase()} requires authorized connection verification before live dispatch.`,
         });
       }
     }
-
-    // Other platforms (Reddit, Mercari, TCGPlayer) in Real Mode
-    if (isRealMode) {
-      return res.json({
-        success: true,
-        platform,
-        status: 'live_synced',
-        statusCode: 200,
-        listingId: `${platform.toUpperCase()}-REAL-${Math.floor(100000 + Math.random() * 900000)}`,
-        message: `Real Mode: Prepared and verified live ${platform.toUpperCase()} payload.`,
-        latencyMs: Math.floor(100 + Math.random() * 150),
-        payload: listingContent?.[platform] || {
-          title: card.title,
-          price: card.askingPrice,
-          status: action,
-        },
-      });
-    }
-
-    // Default Sandbox / Simulation Mode
-    const simulatedListingId = `${platform.toUpperCase()}-${Math.floor(100000 + Math.random() * 900000)}`;
-    return res.json({
-      success: true,
-      platform,
-      status: 'simulated_synced',
-      statusCode: 200,
-      listingId: simulatedListingId,
-      message: `[Sandbox Engine] Formatted payload for ${platform.toUpperCase()}. Switch to Real Mode in top bar to broadcast live.`,
-      latencyMs: Math.floor(120 + Math.random() * 200),
-      payload: listingContent?.[platform] || {
-        title: card.title,
-        price: card.askingPrice,
-        status: action,
-      },
-    });
-  } catch (error: any) {
+  } catch (err: any) {
     return res.status(500).json({
       success: false,
-      error: error.message,
-    });
-  }
-}
-
-export async function handleTestConnection(req: Request, res: Response) {
-  try {
-    const { platform, config } = req.body;
-    const startTime = Date.now();
-
-    if (platform === 'discord') {
-      if (!config?.discordWebhookUrl) {
-        return res.json({ success: false, message: 'No Discord Webhook URL provided.' });
-      }
-      try {
-        const testRes = await fetch(config.discordWebhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            username: 'OmniCard Real-Mode Test',
-            content: '🚀 **OmniCard Real Mode Live Connection Verified!** Live automated card synchronization is active.',
-          }),
-        });
-        return res.json({
-          success: true,
-          status: 'connected',
-          statusCode: testRes.ok ? testRes.status : 200,
-          message: testRes.ok ? 'Discord Webhook connection verified (HTTP 204)!' : 'Discord Webhook Relay verified & authenticated!',
-          latencyMs: Date.now() - startTime || 95,
-        });
-      } catch (e) {
-        return res.json({
-          success: true,
-          status: 'connected',
-          statusCode: 200,
-          message: 'Discord Webhook Gateway verified & ready for drops!',
-          latencyMs: 110,
-        });
-      }
-    }
-
-    if (platform === 'slack') {
-      if (!config?.slackWebhookUrl) {
-        return res.json({ success: false, message: 'No Slack Webhook URL provided.' });
-      }
-      try {
-        const testRes = await fetch(config.slackWebhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            text: '🚀 *OmniCard Real Mode Verified!* Live connection established.',
-          }),
-        });
-        return res.json({
-          success: true,
-          status: 'connected',
-          statusCode: testRes.ok ? testRes.status : 200,
-          message: testRes.ok ? 'Slack Webhook live and confirmed!' : 'Slack Webhook Relay connected and ready!',
-          latencyMs: Date.now() - startTime || 88,
-        });
-      } catch (e) {
-        return res.json({
-          success: true,
-          status: 'connected',
-          statusCode: 200,
-          message: 'Slack Webhook Gateway verified & ready!',
-          latencyMs: 95,
-        });
-      }
-    }
-
-    if (platform === 'telegram') {
-      if (!config?.telegramBotToken || !config?.telegramChatId) {
-        return res.json({ success: false, message: 'Missing Telegram Bot Token or Chat ID.' });
-      }
-      try {
-        const tgRes = await fetch(`https://api.telegram.org/bot${config.telegramBotToken}/getMe`);
-        const data = await tgRes.json();
-        if (data.ok) {
-          return res.json({
-            success: true,
-            status: 'connected',
-            message: `Telegram Bot @${data.result?.username} live & authenticated!`,
-            latencyMs: Date.now() - startTime,
-          });
-        }
-        return res.json({
-          success: true,
-          status: 'connected',
-          message: `Telegram Bot Relay for ${config.telegramChatId} verified & active!`,
-          latencyMs: 120,
-        });
-      } catch (e) {
-        return res.json({
-          success: true,
-          status: 'connected',
-          message: `Telegram Bot Relay for ${config.telegramChatId} verified & active!`,
-          latencyMs: 120,
-        });
-      }
-    }
-
-    if (platform === 'bluesky') {
-      if (!config?.blueskyHandle || !config?.blueskyAppPassword) {
-        return res.json({ success: false, message: 'Missing Bluesky handle or app password.' });
-      }
-      try {
-        const bskyRes = await fetch('https://bsky.social/xrpc/com.atproto.server.createSession', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            identifier: config.blueskyHandle,
-            password: config.blueskyAppPassword,
-          }),
-        });
-        const bskyData = await bskyRes.json();
-        if (bskyRes.ok) {
-          return res.json({
-            success: true,
-            status: 'connected',
-            message: `Bluesky account @${bskyData.handle} authenticated via AT Protocol!`,
-            latencyMs: Date.now() - startTime,
-          });
-        }
-        return res.json({
-          success: true,
-          status: 'connected',
-          message: `Bluesky AT Protocol Relay for @${config.blueskyHandle} verified & active!`,
-          latencyMs: 140,
-        });
-      } catch (e) {
-        return res.json({
-          success: true,
-          status: 'connected',
-          message: `Bluesky AT Protocol Relay for @${config.blueskyHandle} verified & active!`,
-          latencyMs: 140,
-        });
-      }
-    }
-
-    if (platform === 'whatnot') {
-      if (!config?.whatnotApiKey) {
-        return res.json({ success: false, message: 'Missing Whatnot API Key / Seller Token.' });
-      }
-      return res.json({
-        success: true,
-        status: 'connected',
-        statusCode: 200,
-        message: `Whatnot Seller Account @${config.whatnotSellerUsername || 'VerifiedSeller'} authenticated & connected to Show Lot Queue!`,
-        latencyMs: Date.now() - startTime || 105,
-      });
-    }
-
-    if (platform === 'ebay') {
-      if (!config?.ebayDevToken) {
-        return res.json({ success: false, message: 'Missing eBay Developer Token.' });
-      }
-      return res.json({
-        success: true,
-        status: 'connected',
-        statusCode: 200,
-        message: `eBay Marketplace API authenticated with App ID [${config.ebayAppId || 'OmniCard-Prod'}]!`,
-        latencyMs: Date.now() - startTime || 115,
-      });
-    }
-
-    if (platform === 'twitter') {
-      if (!config?.twitterBearerToken) {
-        return res.json({ success: false, message: 'Missing Twitter / X Bearer Token.' });
-      }
-      return res.json({
-        success: true,
-        status: 'connected',
-        statusCode: 200,
-        message: 'Twitter / X API v2 Bearer Token authenticated for automated tweet broadcasts!',
-        latencyMs: Date.now() - startTime || 90,
-      });
-    }
-
-    if (platform === 'reddit') {
-      if (!config?.redditClientId) {
-        return res.json({ success: false, message: 'Missing Reddit Client ID.' });
-      }
-      return res.json({
-        success: true,
-        status: 'connected',
-        statusCode: 200,
-        message: 'Reddit OAuth2 Client authenticated for r/PokemonTCG and r/SportsCardsDrops!',
-        latencyMs: Date.now() - startTime || 130,
-      });
-    }
-
-    if (platform === 'webhook' || platform === 'zapier') {
-      const url = config.customWebhookUrl || config.zapierWebhookUrl;
-      if (!url) return res.json({ success: false, message: 'No Webhook URL provided.' });
-      try {
-        const pingRes = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ event: 'ping', mode: 'real_test', timestamp: Date.now() }),
-        });
-        return res.json({
-          success: true,
-          status: 'connected',
-          statusCode: pingRes.ok ? pingRes.status : 200,
-          message: `Live Webhook verified with HTTP status ${pingRes.status || 200}`,
-          latencyMs: Date.now() - startTime || 80,
-        });
-      } catch (e) {
-        return res.json({
-          success: true,
-          status: 'connected',
-          statusCode: 200,
-          message: `Live Webhook Gateway for (${url}) verified & ready for events!`,
-          latencyMs: 90,
-        });
-      }
-    }
-
-    // Generic platform token verification
-    return res.json({
-      success: true,
-      status: 'connected',
-      message: `Real Mode: ${platform.toUpperCase()} API endpoint verified and ready for live synchronization!`,
-      latencyMs: 110,
-    });
-  } catch (err: any) {
-    return res.json({
-      success: false,
       status: 'error',
-      message: err.message,
+      error: err.message,
     });
   }
 }
 
-// Fallback generators
+// Fallback identification generator
 function generateSmartFallbackIdentification(hint: string) {
   const isCrossover = /gtr|gt-r|supercar|crossover|car.*pokemon|pokemon.*car|revavroom/i.test(hint);
   const isRacing = /f1|formula|hamilton|verstappen|ferrari|leclerc|racing|topps chrome f1|nascar|porsche/i.test(hint);
   const isPokemon = /charizard|pikachu|mewtwo|lugia|blastoise|gengar|pokemon/i.test(hint);
   const isJordan = /jordan|bulls|fleer|basketball/i.test(hint);
-  const isBurrow = /burrow|prizm|bengals|football/i.test(hint);
 
   if (isCrossover) {
     return {
@@ -960,7 +637,6 @@ function generateSmartFallbackIdentification(hint: string) {
         popReportEstimate: 'PSA 10 Pop: 88 / Total Graded: 420',
         recentSales: [
           { date: '2026-08-15', platform: 'eBay Buy It Now', grade: 'PSA 10', price: 1950, title: 'Pokemon Custom Crossover Pikachu GT-R Supercar Holo PSA 10 GEM MINT' },
-          { date: '2026-08-01', platform: 'PWCC Premier', grade: 'PSA 10', price: 1920, title: 'Pikachu GT-R Custom Holo PSA 10' },
         ],
       },
       recommendedListingPrice: 1995,
@@ -992,7 +668,6 @@ function generateSmartFallbackIdentification(hint: string) {
         popReportEstimate: 'PSA 10 Pop: 614 / Total Graded: 2,480',
         recentSales: [
           { date: '2026-08-12', platform: 'eBay Auction', grade: 'PSA 10', price: 3750, title: '2020 Topps Chrome F1 Lewis Hamilton #1 Refractor PSA 10 GEM MINT' },
-          { date: '2026-07-28', platform: 'PWCC Vault', grade: 'PSA 10', price: 3900, title: '2020 Topps Chrome Formula 1 Lewis Hamilton Refractor #1 PSA 10' },
         ],
       },
       recommendedListingPrice: 3895,
@@ -1024,8 +699,6 @@ function generateSmartFallbackIdentification(hint: string) {
         popReportEstimate: 'PSA 9 Pop: 724 / Total: 4,110',
         recentSales: [
           { date: '2026-08-02', platform: 'eBay Auction', grade: 'PSA 9', price: 12400, title: '1999 Pokemon Game 1st Edition Shadowless Charizard Holo #4 PSA 9 MINT' },
-          { date: '2026-07-19', platform: 'PWCC Premier', grade: 'PSA 9', price: 12850, title: '1999 Pokemon Base Set 1st Edition Charizard #4 PSA 9' },
-          { date: '2026-07-03', platform: 'Goldin Elite', grade: 'PSA 9', price: 12100, title: '1999 Pokemon 1st Edition Shadowless Charizard PSA 9' },
         ],
       },
       recommendedListingPrice: 12900,
@@ -1056,8 +729,7 @@ function generateSmartFallbackIdentification(hint: string) {
         liquidityRating: 'High',
         popReportEstimate: 'BGS 8.5 Pop: 1,420 / Total Graded: 14,800',
         recentSales: [
-          { date: '2026-08-10', platform: 'eBay Sold', grade: 'BGS 8.5', price: 7350, title: '1986 Fleer Michael Jordan #57 Rookie RC BGS 8.5 with 9 Centering' },
-          { date: '2026-07-25', platform: 'Heritage Auctions', grade: 'BGS 8.5', price: 7600, title: '1986 Fleer #57 Michael Jordan Rookie BGS 8.5' },
+          { date: '2026-08-10', platform: 'eBay Sold', grade: 'BGS 8.5', price: 7350, title: '1986 Fleer Michael Jordan #57 Rookie RC BGS 8.5' },
         ],
       },
       recommendedListingPrice: 7500,
@@ -1088,7 +760,6 @@ function generateSmartFallbackIdentification(hint: string) {
       popReportEstimate: 'PSA 10 Pop: 3,110 / Total: 7,450',
       recentSales: [
         { date: '2026-08-12', platform: 'eBay Auction', grade: 'PSA 10', price: 1825, title: '2020 Panini Prizm Joe Burrow Silver Prizm #307 Rookie PSA 10 GEM MINT' },
-        { date: '2026-07-30', platform: 'PWCC Vault', grade: 'PSA 10', price: 1900, title: '2020 Prizm Joe Burrow #307 Silver RC PSA 10' },
       ],
     },
     recommendedListingPrice: 1895,
@@ -1132,7 +803,7 @@ function generateSmartPlatformListings(card: any) {
       suddenDeathSeconds: 30,
       category: card.category === 'pokemon' ? 'Pokemon TCG' : 'Sports Cards',
       condition: `${card.grader} ${card.gradeScore}`,
-      lotType: 'auction', // or 'buy_it_now'
+      lotType: 'auction',
       description: `${card.title} [${card.grader} ${card.gradeScore}]. Fast bubble mailer shipping with tracking. Authentic collector slab ready for live stream auction run!`,
       shippingProfile: 'USPS Bubble Mailer 4oz (Tracked)',
     },
@@ -1145,7 +816,7 @@ function generateSmartPlatformListings(card: any) {
         { name: '📊 FMV Comps', value: `$${card.estimatedWorth?.fairMarketValue || price}`, inline: true },
         { name: '⭐ Grade', value: `${card.grader} ${card.gradeScore}`, inline: true },
       ],
-      footerText: 'OmniCard Sync • Verified Collector Listing',
+      footerText: 'BossLister Card Sync • Verified Collector Listing',
     },
     reddit: {
       title: `[US, US] [H] ${card.title} [W] $${price} PayPal G&S`,
