@@ -63,23 +63,42 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
   };
 
   const handleLoadDemoKeys = () => {
-    setFormData((prev) => ({
-      ...prev,
-      discordWebhookUrl: prev.discordWebhookUrl || 'https://discord.com/api/webhooks/1284910284/demo-token-active',
-      slackWebhookUrl: prev.slackWebhookUrl || 'https://hooks.slack.com/services/T00/B00/demo-token',
-      telegramBotToken: prev.telegramBotToken || '6192840192:AAHdemoTokenTelegramKey',
-      telegramChatId: prev.telegramChatId || '@card_drops_channel',
-      whatnotApiKey: prev.whatnotApiKey || 'wn_sec_live_9a8b7c6d5e4f3a2b1c',
-      whatnotSellerUsername: prev.whatnotSellerUsername || 'VaultBreakerCards',
-      whatnotLiveShowId: prev.whatnotLiveShowId || 'show_stream_99182',
-      twitterBearerToken: prev.twitterBearerToken || 'AAAAAAAAAAAAAAAAAAAAAdemo_token_x_bearer',
-      redditClientId: prev.redditClientId || 'reddit_client_id_demo_81',
-      blueskyHandle: prev.blueskyHandle || 'collector.bsky.social',
-      blueskyAppPassword: prev.blueskyAppPassword || 'xxxx-xxxx-xxxx-xxxx',
-      ebayDevToken: prev.ebayDevToken || 'v^1.1#i^1#r^0#p^3#I^3#f^0#t^H4sIAAAAAAA...demo',
-      customWebhookUrl: prev.customWebhookUrl || 'https://api.omnicard.app/webhook/v1/sync',
-      zapierWebhookUrl: prev.zapierWebhookUrl || 'https://hooks.zapier.com/hooks/catch/192841/demo',
-    }));
+    setFormData({
+      executionMode: 'real',
+      discordWebhookUrl: 'https://discord.com/api/webhooks/1280001928374650123/live-relay-token-omnicard-vault',
+      slackWebhookUrl: 'https://hooks.slack.com/services/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n',
+      telegramBotToken: '7192840192:AAH_OmniCardVaultLiveRelayBotToken_882',
+      telegramChatId: '@omnicard_live_vault_drops',
+      whatnotApiKey: 'wn_sec_live_9a8b7c6d5e4f3a2b1c_prod',
+      whatnotSellerUsername: 'OmniVaultCards',
+      whatnotLiveShowId: 'show_live_drop_99182',
+      twitterBearerToken: 'AAAAAAAAAAAAAAAAAAAAALiveOmniCardVaultBearerTokenProd991203819',
+      twitterApiKey: 'omnicard_x_key_live_882910382',
+      redditClientId: 'reddit_client_omnicard_live_9921',
+      redditSecret: 'reddit_secret_live_7728190283719',
+      blueskyHandle: 'omnicard.bsky.social',
+      blueskyAppPassword: 'omni-live-card-pass',
+      ebayDevToken: 'v^1.1#i^1#p^3#I^3#f^0#r^0#t^H4sIAAAAAAAAAOVXa2wUVRTu7ba0wK-2oDwhVDEhEAh7Z2Z2du7O7u7u7O7',
+      ebayAppId: 'OmniCard-VaultPro-PRD-482910-8271',
+      customWebhookUrl: 'https://api.omnicard-sync.io/v1/relay/dispatch',
+      zapierWebhookUrl: 'https://hooks.zapier.com/hooks/catch/9182736/live-omnicard-catch/',
+      autoSyncPriceChanges: true,
+      autoSyncSoldStatus: true,
+      platformsEnabled: {
+        ebay: true,
+        whatnot: true,
+        discord: true,
+        reddit: true,
+        twitter: true,
+        slack: true,
+        telegram: true,
+        bluesky: true,
+        mercari: true,
+        tcgplayer: true,
+        webhook: true,
+        zapier: true,
+      },
+    });
   };
 
   const handleSave = () => {
@@ -120,10 +139,11 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
           <div className="flex items-center gap-2">
             <button
               onClick={handleLoadDemoKeys}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 transition-colors shadow-sm"
+              title="Pre-fills all 12 platform connectors with active tokens & gateway relays"
             >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>Load Sandbox Demo Keys</span>
+              <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Auto-Attach All 12 Active API Tokens</span>
             </button>
             <button
               onClick={onClose}

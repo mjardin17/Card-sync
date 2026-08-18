@@ -39,7 +39,15 @@ export default function App() {
     const saved = localStorage.getItem(LOCAL_STORAGE_CONFIG_KEY);
     if (saved) {
       try {
-        return { ...DEFAULT_PLATFORM_CONFIG, ...JSON.parse(saved) };
+        const parsed = JSON.parse(saved);
+        // Cleanly merge so that empty values get the active working default tokens
+        const merged: any = { ...DEFAULT_PLATFORM_CONFIG, ...parsed };
+        for (const key of Object.keys(DEFAULT_PLATFORM_CONFIG)) {
+          if (!merged[key] && (DEFAULT_PLATFORM_CONFIG as any)[key]) {
+            merged[key] = (DEFAULT_PLATFORM_CONFIG as any)[key];
+          }
+        }
+        return merged as PlatformConfigState;
       } catch (e) {
         console.error('Error loading config from storage:', e);
       }
