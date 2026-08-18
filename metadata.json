@@ -1,0 +1,6 @@
+{
+  "name": "OmniCard Sync & Value Vault",
+  "description": "Automated appraisal, real-time comps, and zero-labor multi-platform cross-posting hub for Sports Cards, Pokémon, Supercars, and Graded Slabs.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
