@@ -52,18 +52,10 @@ export const Navbar: React.FC<NavbarProps> = ({
     return acc + (card.estimatedWorth?.fairMarketValue || card.askingPrice || 0);
   }, 0);
 
-  // Count active attached keys/webhooks
-  const attachedKeysCount = [
-    config.discordWebhookUrl,
-    config.slackWebhookUrl,
-    config.telegramBotToken,
-    config.ebayDevToken,
-    config.twitterBearerToken,
-    config.redditClientId,
-    config.blueskyHandle,
-    config.customWebhookUrl,
-    config.zapierWebhookUrl,
-  ].filter(Boolean).length;
+  // Count active verified connected platforms from metadata
+  const verifiedPlatformsCount = Object.values(config.connectionStatuses || {}).filter(
+    (conn: any) => conn?.status === 'VERIFIED'
+  ).length;
 
   return (
     <header className="sticky top-0 z-40 w-full bg-zinc-950/90 backdrop-blur-md border-b border-zinc-800">
@@ -78,7 +70,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-base font-black text-white tracking-tight">
-                OmniCard<span className="text-amber-400">Sync</span>
+                BossLister<span className="text-amber-400">Sync</span>
               </h1>
               <button
                 onClick={onToggleExecutionMode}
@@ -168,9 +160,9 @@ export const Navbar: React.FC<NavbarProps> = ({
           >
             <Key className="w-4 h-4 text-amber-400" />
             <span className="hidden sm:inline">Token Vault</span>
-            {attachedKeysCount > 0 ? (
+            {verifiedPlatformsCount > 0 ? (
               <span className="px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-mono border border-emerald-500/30">
-                {attachedKeysCount} Live
+                {verifiedPlatformsCount} Connected
               </span>
             ) : (
               <span className="px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-400 text-[10px] font-mono">

@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { PlatformConfigState, PlatformId, PlatformConnectionInfo } from '../types/card';
+import { ClientPlatformPreferences, PlatformId, PlatformConnectionInfo } from '../types/card';
 import { PLATFORMS_LIST, PlatformMeta } from '../data/platforms';
 import { 
-  testConnectionApi, 
   getVaultStatusApi, 
   saveCredentialsApi, 
   disconnectPlatformApi,
+  verifyPlatformApi,
   verifyAllPlatformsApi
 } from '../services/geminiClient';
+import { safeLogger } from '../utils/redact';
 import { 
   Key, 
   Shield, 
@@ -32,8 +33,8 @@ import {
 interface TokenVaultModalProps {
   isOpen: boolean;
   onClose: () => void;
-  config: PlatformConfigState;
-  onSaveConfig: (newConfig: PlatformConfigState) => void;
+  config: ClientPlatformPreferences;
+  onSaveConfig: (newConfig: ClientPlatformPreferences) => void;
 }
 
 export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
@@ -42,9 +43,9 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
   config,
   onSaveConfig,
 }) => {
-  const [formData, setFormData] = useState<PlatformConfigState>({ ...config });
+  const [formData, setFormData] = useState<ClientPlatformPreferences>({ ...config });
   const [connectionInfoMap, setConnectionInfoMap] = useState<Record<PlatformId, PlatformConnectionInfo>>(
-    config.connectionStatuses || {} as any
+    config.connectionStatuses || ({} as any)
   );
   const [activePlatformModal, setActivePlatformModal] = useState<PlatformMeta | null>(null);
   const [testingPlatform, setTestingPlatform] = useState<string | null>(null);
@@ -53,7 +54,7 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [showSecretInputs, setShowSecretInputs] = useState<Record<string, boolean>>({});
 
-  // Temporary credentials entered in connection modal
+  // Temporary credentials entered in connection modal (wiped immediately after submission)
   const [tempCreds, setTempCreds] = useState<Record<string, string>>({});
   const [modalVerifyError, setModalVerifyError] = useState<string | null>(null);
   const [modalVerifySuccess, setModalVerifySuccess] = useState<string | null>(null);
@@ -68,7 +69,7 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
             setConnectionInfoMap((prev) => ({ ...prev, ...res.statuses }));
           }
         })
-        .catch((err) => console.error('Failed to load server vault status:', err));
+        .catch((err) => safeLogger.error('Failed to load server vault status:', err));
     }
   }, [isOpen]);
 
@@ -81,7 +82,7 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
   const handleTestPlatform = async (platformId: PlatformId) => {
     setTestingPlatform(platformId);
     try {
-      const res = await testConnectionApi(platformId, formData);
+      const res = await verifyPlatformApi(platformId);
       if (res.connectionInfo) {
         setConnectionInfoMap((prev) => ({
           ...prev,
@@ -96,7 +97,7 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
         }));
       }
     } catch (err: any) {
-      console.error(`Error testing ${platformId}:`, err);
+      safeLogger.error(`Error testing ${platformId}:`, err);
     } finally {
       setTestingPlatform(null);
     }
@@ -105,7 +106,7 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
   const handleVerifyAllPlatforms = async () => {
     setIsVerifyingAll(true);
     try {
-      const res = await verifyAllPlatformsApi(formData);
+      const res = await verifyAllPlatformsApi();
       if (res.success && res.results) {
         setConnectionInfoMap(res.results);
         setFormData((prev) => ({
@@ -114,7 +115,7 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
         }));
       }
     } catch (err: any) {
-      console.error('Failed to verify all platforms:', err);
+      safeLogger.error('Failed to verify all platforms:', err);
     } finally {
       setIsVerifyingAll(false);
     }
@@ -124,39 +125,8 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
     setActivePlatformModal(platform);
     setModalVerifyError(null);
     setModalVerifySuccess(null);
-
-    // Initialize temp credentials based on platform
-    const current: Record<string, string> = {};
-    if (platform.id === 'discord') current.discordWebhookUrl = formData.discordWebhookUrl || '';
-    if (platform.id === 'telegram') {
-      current.telegramBotToken = formData.telegramBotToken || '';
-      current.telegramChatId = formData.telegramChatId || '';
-    }
-    if (platform.id === 'bluesky') {
-      current.blueskyHandle = formData.blueskyHandle || '';
-      current.blueskyAppPassword = formData.blueskyAppPassword || '';
-    }
-    if (platform.id === 'ebay') {
-      current.ebayDevToken = formData.ebayDevToken || '';
-      current.ebayEnvironment = formData.ebayEnvironment || 'production';
-    }
-    if (platform.id === 'twitter') current.twitterBearerToken = formData.twitterBearerToken || '';
-    if (platform.id === 'reddit') {
-      current.redditClientId = formData.redditClientId || '';
-      current.redditSecret = formData.redditSecret || '';
-    }
-    if (platform.id === 'slack') current.slackWebhookUrl = formData.slackWebhookUrl || '';
-    if (platform.id === 'zapier') current.zapierWebhookUrl = formData.zapierWebhookUrl || '';
-    if (platform.id === 'webhook') current.customWebhookUrl = formData.customWebhookUrl || '';
-    if (platform.id === 'whatnot') {
-      current.whatnotApiKey = formData.whatnotApiKey || '';
-      current.whatnotSellerUsername = formData.whatnotSellerUsername || '';
-    }
-    if (platform.id === 'tcgplayer') {
-      current.tcgplayerPublicKey = formData.tcgplayerPublicKey || '';
-      current.tcgplayerPrivateKey = formData.tcgplayerPrivateKey || '';
-    }
-    setTempCreds(current);
+    // Never pre-fill secrets into state; start with blank form for entering/updating credentials
+    setTempCreds({});
   };
 
   const handleSaveAndVerifyModal = async () => {
@@ -167,14 +137,16 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
 
     try {
       const saveRes = await saveCredentialsApi(activePlatformModal.id, tempCreds);
+      // Wipe temporary secret buffer from component state immediately
+      setTempCreds({});
+
       if (saveRes.success && saveRes.connectionInfo) {
         const info: PlatformConnectionInfo = saveRes.connectionInfo;
         setConnectionInfoMap((prev) => ({ ...prev, [activePlatformModal.id]: info }));
 
-        // Update formData
-        const updatedConfig: PlatformConfigState = {
+        // Update sanitized client state (NO SECRETS)
+        const updatedConfig: ClientPlatformPreferences = {
           ...formData,
-          ...tempCreds,
           connectionStatuses: {
             ...formData.connectionStatuses,
             [activePlatformModal.id]: info,
@@ -205,44 +177,21 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
       const res = await disconnectPlatformApi(platformId);
       if (res.success && res.connectionInfo) {
         setConnectionInfoMap((prev) => ({ ...prev, [platformId]: res.connectionInfo }));
-        setFormData((prev) => {
-          const next = { ...prev };
-          if (platformId === 'discord') next.discordWebhookUrl = '';
-          if (platformId === 'telegram') {
-            next.telegramBotToken = '';
-            next.telegramChatId = '';
-          }
-          if (platformId === 'bluesky') {
-            next.blueskyHandle = '';
-            next.blueskyAppPassword = '';
-          }
-          if (platformId === 'ebay') next.ebayDevToken = '';
-          if (platformId === 'twitter') next.twitterBearerToken = '';
-          if (platformId === 'reddit') {
-            next.redditClientId = '';
-            next.redditSecret = '';
-          }
-          if (platformId === 'slack') next.slackWebhookUrl = '';
-          if (platformId === 'zapier') next.zapierWebhookUrl = '';
-          if (platformId === 'webhook') next.customWebhookUrl = '';
-          if (platformId === 'whatnot') {
-            next.whatnotApiKey = '';
-            next.whatnotSellerUsername = '';
-          }
-          next.connectionStatuses = {
-            ...next.connectionStatuses,
+        setFormData((prev) => ({
+          ...prev,
+          connectionStatuses: {
+            ...prev.connectionStatuses,
             [platformId]: res.connectionInfo,
-          };
-          return next;
-        });
+          },
+        }));
       }
     } catch (err) {
-      console.error(`Error disconnecting ${platformId}:`, err);
+      safeLogger.error(`Error disconnecting ${platformId}:`, err);
     }
   };
 
   const handleSave = () => {
-    const finalConfig: PlatformConfigState = {
+    const finalConfig: ClientPlatformPreferences = {
       ...formData,
       connectionStatuses: connectionInfoMap,
     };
@@ -280,7 +229,7 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
                 </span>
               </div>
               <p className="text-xs text-zinc-400">
-                Authenticate official production credentials via OAuth, Bot Tokens, and Webhooks for card synchronization.
+                Encrypted Server-Side Token Vault with AES-256-GCM. Client stores zero plaintext credentials.
               </p>
             </div>
           </div>
@@ -453,7 +402,12 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
                             MANUAL EXPORT
                           </span>
                         )}
-                        {!isConnected && !isApprovalRequired && !isPartnerRequired && !isManualExport && (
+                        {connInfo.status === 'ERROR' && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-md bg-red-500/10 text-red-400 border border-red-500/30 font-semibold">
+                            ERROR
+                          </span>
+                        )}
+                        {connInfo.status === 'NOT_CONNECTED' && (
                           <span className="text-[10px] px-2 py-0.5 rounded-md bg-zinc-800 text-zinc-400 border border-zinc-700 font-medium">
                             NOT CONNECTED
                           </span>
@@ -461,108 +415,106 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
                       </div>
                     </div>
 
-                    {/* Account Details or Setup Guide snippet */}
-                    <div className="my-3 py-2 px-2.5 rounded-lg bg-zinc-950/60 border border-zinc-800/80 text-[11px] space-y-1">
-                      {isConnected ? (
-                        <>
-                          <div className="text-zinc-200 font-semibold truncate flex items-center justify-between">
-                            <span>Account:</span>
-                            <span className="text-emerald-400 font-mono">{connInfo.accountName || connInfo.accountId}</span>
-                          </div>
-                          {connInfo.storeOrChannel && (
-                            <div className="text-zinc-400 text-[10px] truncate">
-                              {connInfo.storeOrChannel}
-                            </div>
-                          )}
-                          {connInfo.latencyMs && (
-                            <div className="text-zinc-500 text-[9px]">
-                              Verified response: {connInfo.latencyMs}ms
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        <div className="text-zinc-400 text-[10px] leading-relaxed">
-                          {platform.setupGuide || 'Configure credentials to enable live inventory push.'}
-                        </div>
-                      )}
-                    </div>
+                    <p className="text-xs text-zinc-400 line-clamp-2 mb-3">
+                      {platform.description}
+                    </p>
 
-                    {/* Granted Scopes / Permissions pills */}
+                    {/* Account Identification metadata (non-secret) */}
+                    {isConnected && connInfo.accountName && (
+                      <div className="mb-3 p-2 rounded-lg bg-zinc-950/60 border border-zinc-800 text-[11px] text-zinc-300">
+                        <div className="flex items-center justify-between text-zinc-400">
+                          <span>Account:</span>
+                          <span className="font-semibold text-white">{connInfo.accountName}</span>
+                        </div>
+                        {connInfo.storeOrChannel && (
+                          <div className="flex items-center justify-between text-zinc-400 mt-0.5">
+                            <span>Target:</span>
+                            <span className="text-zinc-300">{connInfo.storeOrChannel}</span>
+                          </div>
+                        )}
+                        {connInfo.latencyMs !== undefined && (
+                          <div className="flex items-center justify-between text-zinc-400 mt-0.5">
+                            <span>Probe Latency:</span>
+                            <span className="text-emerald-400 font-mono">{connInfo.latencyMs}ms</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Error indicator */}
+                    {connInfo.lastError && (
+                      <div className="mb-3 p-2 rounded-lg bg-red-500/10 border border-red-500/20 text-[11px] text-red-300 flex items-start gap-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
+                        <span className="line-clamp-2">{connInfo.lastError}</span>
+                      </div>
+                    )}
+
+                    {/* Granular Permission Chips */}
                     <div className="flex flex-wrap gap-1 mb-3">
-                      {platform.requiredScopes.slice(0, 3).map((scope) => (
-                        <span
-                          key={scope}
-                          className={`text-[9px] px-1.5 py-0.5 rounded font-mono ${
-                            isConnected
-                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                              : 'bg-zinc-800/60 text-zinc-400 border border-zinc-800'
-                          }`}
-                        >
-                          {scope}
-                        </span>
-                      ))}
-                      {platform.requiredScopes.length > 3 && (
-                        <span className="text-[9px] text-zinc-500 px-1 py-0.5">
-                          +{platform.requiredScopes.length - 3} more
-                        </span>
-                      )}
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded ${connInfo.readPermission ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20' : 'bg-zinc-800 text-zinc-500'}`}>
+                        Read {connInfo.readPermission ? '✓' : '✗'}
+                      </span>
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded ${connInfo.writePermission ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20' : 'bg-zinc-800 text-zinc-500'}`}>
+                        Write {connInfo.writePermission ? '✓' : '✗'}
+                      </span>
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded ${connInfo.listingPermission ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20' : 'bg-zinc-800 text-zinc-500'}`}>
+                        Listing {connInfo.listingPermission ? '✓' : '✗'}
+                      </span>
                     </div>
                   </div>
 
                   {/* Actions Row */}
-                  <div className="pt-2.5 border-t border-zinc-800 flex items-center justify-between gap-2">
+                  <div className="pt-3 border-t border-zinc-800 flex items-center justify-between gap-2">
+                    <label className="flex items-center gap-1.5 text-[11px] text-zinc-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={isEnabled}
+                        onChange={(e) =>
+                          setFormData((prev) => ({
+                            ...prev,
+                            platformsEnabled: {
+                              ...prev.platformsEnabled,
+                              [platform.id]: e.target.checked,
+                            },
+                          }))
+                        }
+                        className="w-3.5 h-3.5 rounded text-amber-500 bg-zinc-800 border-zinc-700"
+                      />
+                      <span>Active</span>
+                    </label>
+
                     <div className="flex items-center gap-1.5">
                       {isConnected ? (
                         <>
                           <button
+                            type="button"
                             onClick={() => handleTestPlatform(platform.id)}
                             disabled={isTesting}
-                            className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-colors"
-                            title="Verify live connection"
+                            className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold flex items-center gap-1 transition-colors"
                           >
-                            <RefreshCw className={`w-3.5 h-3.5 ${isTesting ? 'animate-spin text-amber-400' : ''}`} />
+                            <RefreshCw className={`w-3 h-3 ${isTesting ? 'animate-spin text-amber-400' : ''}`} />
+                            <span>Test</span>
                           </button>
                           <button
+                            type="button"
                             onClick={() => handleDisconnect(platform.id)}
-                            className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-colors"
-                            title="Disconnect and clear token"
+                            className="p-1 rounded-lg text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                            title="Disconnect & Purge from Vault"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </>
                       ) : (
-                        <a
-                          href={platform.developerPortalUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center gap-1 text-[10px] text-zinc-400 hover:text-zinc-200 transition-colors"
+                        <button
+                          type="button"
+                          onClick={() => openConnectDrawer(platform)}
+                          className="flex items-center gap-1 px-3 py-1 rounded-lg bg-amber-400 hover:bg-amber-300 text-zinc-950 font-bold text-xs transition-colors shadow-sm"
                         >
-                          <span>Portal</span>
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
+                          <Lock className="w-3 h-3" />
+                          <span>Connect</span>
+                        </button>
                       )}
                     </div>
-
-                    <button
-                      onClick={() => openConnectDrawer(platform)}
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                        isConnected
-                          ? 'bg-zinc-800 text-zinc-200 hover:bg-zinc-750 hover:text-white border border-zinc-750'
-                          : 'bg-amber-400 text-zinc-950 hover:bg-amber-300 shadow-sm'
-                      }`}
-                    >
-                      {isConnected ? (
-                        <>
-                          <Sliders className="w-3 h-3" />
-                          <span>Settings</span>
-                        </>
-                      ) : (
-                        <>
-                          <ArrowRight className="w-3 h-3" />
-                          <span>Connect</span>
-                        </>
-                      )}
-                    </button>
                   </div>
                 </div>
               );
@@ -572,94 +524,84 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
 
         {/* Modal Footer */}
         <div className="p-4 border-t border-zinc-800 bg-zinc-950 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-xs text-zinc-400">
-            <Lock className="w-4 h-4 text-emerald-400" />
-            <span>Server-side encrypted token storage. Verified directly against official provider APIs.</span>
+          <div className="text-xs text-zinc-500 flex items-center gap-2">
+            <Lock className="w-3.5 h-3.5 text-amber-400/70" />
+            <span>Encrypted Server Vault Active • AES-256-GCM authenticated</span>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <button
               onClick={onClose}
-              className="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-300 hover:bg-zinc-800 transition-colors"
+              className="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-400 hover:text-white transition-colors"
             >
               Cancel
             </button>
             <button
               onClick={handleSave}
-              className="flex items-center gap-2 px-5 py-2 rounded-xl text-xs font-bold text-zinc-950 bg-amber-400 hover:bg-amber-300 shadow-lg shadow-amber-500/20 transition-all"
+              className="flex items-center gap-2 px-6 py-2 rounded-xl text-xs font-bold text-zinc-950 bg-amber-400 hover:bg-amber-300 shadow-lg shadow-amber-400/10 transition-all"
             >
-              {saveSuccess ? <Check className="w-4 h-4" /> : <Shield className="w-4 h-4" />}
-              <span>{saveSuccess ? 'Saved!' : 'Save & Close'}</span>
+              {saveSuccess ? (
+                <>
+                  <Check className="w-4 h-4 text-emerald-950" />
+                  <span>Preferences Saved!</span>
+                </>
+              ) : (
+                <>
+                  <Check className="w-4 h-4" />
+                  <span>Save Preferences</span>
+                </>
+              )}
             </button>
           </div>
         </div>
       </div>
 
-      {/* Individual Platform Connection Setup Drawer / Modal */}
+      {/* Slide-over Connection Drawer / Modal */}
       {activePlatformModal && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-zinc-900 border border-zinc-700 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col">
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in">
+          <div className="bg-zinc-900 border border-zinc-700 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden animate-in zoom-in-95 duration-150">
             {/* Header */}
-            <div className="p-5 border-b border-zinc-800 bg-zinc-950 flex items-center justify-between">
-              <div className="flex items-center gap-3">
+            <div className="p-4 border-b border-zinc-800 bg-zinc-950 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
                 <span
                   className="w-4 h-4 rounded-full"
                   style={{ backgroundColor: activePlatformModal.color }}
                 />
-                <div>
-                  <h3 className="font-bold text-base text-white">
-                    Connect {activePlatformModal.name}
-                  </h3>
-                  <span className="text-xs text-zinc-400">
-                    {activePlatformModal.authCategory} Authorization Flow
-                  </span>
-                </div>
+                <h4 className="font-bold text-sm text-white">
+                  Connect {activePlatformModal.name}
+                </h4>
               </div>
               <button
                 onClick={() => setActivePlatformModal(null)}
-                className="p-1.5 text-zinc-400 hover:text-white rounded-lg hover:bg-zinc-800"
+                className="p-1 text-zinc-400 hover:text-white rounded-lg hover:bg-zinc-800"
               >
-                <X className="w-5 h-5" />
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Content */}
+            {/* Body */}
             <div className="p-5 space-y-4 max-h-[70vh] overflow-y-auto">
-              {/* Setup instructions box */}
-              <div className="p-3.5 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-zinc-300 space-y-2">
-                <div className="font-semibold text-zinc-200 flex items-center justify-between">
-                  <span>Official Setup Guide:</span>
-                  <a
-                    href={activePlatformModal.developerPortalUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-amber-400 hover:text-amber-300 flex items-center gap-1 text-[11px]"
-                  >
-                    <span>Open Developer Portal</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
-                </div>
-                <p className="text-zinc-400 leading-relaxed">{activePlatformModal.setupGuide}</p>
-              </div>
+              <p className="text-xs text-zinc-300">
+                {activePlatformModal.description}
+              </p>
 
-              {/* Scopes badge list */}
-              <div>
-                <label className="block text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">
-                  Requested Scopes & Permissions
-                </label>
-                <div className="flex flex-wrap gap-1.5">
-                  {activePlatformModal.requiredScopes.map((scope) => (
-                    <span
-                      key={scope}
-                      className="text-xs px-2 py-0.5 rounded bg-zinc-950 border border-zinc-800 font-mono text-zinc-300"
-                    >
-                      {scope}
-                    </span>
-                  ))}
-                </div>
-              </div>
+              {/* Official Documentation Link */}
+              {activePlatformModal.officialDocsUrl && (
+                <a
+                  href={activePlatformModal.officialDocsUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center justify-between p-2.5 rounded-xl bg-zinc-950 border border-zinc-800 hover:border-zinc-700 text-xs text-amber-400 transition-colors"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <Globe className="w-3.5 h-3.5" />
+                    <span>Official {activePlatformModal.name} Developer Portal</span>
+                  </span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              )}
 
-              {/* Dynamic Credential Input Fields */}
+              {/* Inputs Per Platform */}
               <div className="space-y-3 pt-2">
                 {activePlatformModal.id === 'discord' && (
                   <div>
@@ -673,7 +615,7 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
                       onChange={(e) =>
                         setTempCreds((prev) => ({ ...prev, discordWebhookUrl: e.target.value }))
                       }
-                      className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-amber-500"
+                      className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-amber-500 font-mono"
                     />
                   </div>
                 )}
@@ -695,7 +637,7 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
                       </div>
                       <input
                         type={showSecretInputs.tgBot ? 'text' : 'password'}
-                        placeholder="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
+                        placeholder="123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ"
                         value={tempCreds.telegramBotToken || ''}
                         onChange={(e) =>
                           setTempCreds((prev) => ({ ...prev, telegramBotToken: e.target.value }))
@@ -881,7 +823,7 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
                       </label>
                       <input
                         type="text"
-                        placeholder="Reddit Client ID (under app title)"
+                        placeholder="Reddit Client ID"
                         value={tempCreds.redditClientId || ''}
                         onChange={(e) =>
                           setTempCreds((prev) => ({ ...prev, redditClientId: e.target.value }))
@@ -1046,7 +988,7 @@ export const TokenVaultModal: React.FC<TokenVaultModalProps> = ({
                 ) : (
                   <>
                     <Check className="w-3.5 h-3.5" />
-                    <span>Verify & Connect</span>
+                    <span>Verify & Save in Vault</span>
                   </>
                 )}
               </button>

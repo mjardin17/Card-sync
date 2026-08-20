@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import confetti from 'canvas-confetti';
-import { CardItem, PlatformConfigState, SyncLogEntry, PlatformId } from './types/card';
+import { CardItem, ClientPlatformPreferences, SyncLogEntry, PlatformId } from './types/card';
 import { CurrencyCode } from './utils/currencyAndShipping';
 import { SAMPLE_CARDS, DEFAULT_PLATFORM_CONFIG } from './data/sampleCards';
 import { PLATFORMS_LIST } from './data/platforms';
@@ -15,13 +15,24 @@ import { BatchBulkScannerModal } from './components/BatchBulkScannerModal';
 import { OfferNegotiatorModal } from './components/OfferNegotiatorModal';
 import { CardWatermarkGalleryModal } from './components/CardWatermarkGalleryModal';
 import { CardShowPrintModal } from './components/CardShowPrintModal';
+import { safeLogger } from './utils/redact';
+import {
+  migrateAndSanitizeLocalStorage,
+  loadSanitizedClientPreferences,
+  saveSanitizedClientPreferences,
+  PURGED_STORAGE_KEYS,
+} from './utils/storageSanitizer';
 
 const LOCAL_STORAGE_CARDS_KEY = 'omnicard_vault_cards_v1';
-const LOCAL_STORAGE_CONFIG_KEY = 'omnicard_vault_config_v1';
 const LOCAL_STORAGE_LOGS_KEY = 'omnicard_vault_logs_v1';
 const LOCAL_STORAGE_CURRENCY_KEY = 'omnicard_vault_currency_v1';
 
 export default function App() {
+  // On initial boot, sanitize local storage immediately to purge legacy secrets
+  useEffect(() => {
+    migrateAndSanitizeLocalStorage();
+  }, []);
+
   // Application State
   const [cards, setCards] = useState<CardItem[]>(() => {
     const saved = localStorage.getItem(LOCAL_STORAGE_CARDS_KEY);
@@ -29,30 +40,14 @@ export default function App() {
       try {
         return JSON.parse(saved);
       } catch (e) {
-        console.error('Error loading cards from storage:', e);
+        safeLogger.error('Error loading cards from storage:', e);
       }
     }
     return SAMPLE_CARDS;
   });
 
-  const [config, setConfig] = useState<PlatformConfigState>(() => {
-    const saved = localStorage.getItem(LOCAL_STORAGE_CONFIG_KEY);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        // Cleanly merge so that empty values get the active working default tokens
-        const merged: any = { ...DEFAULT_PLATFORM_CONFIG, ...parsed };
-        for (const key of Object.keys(DEFAULT_PLATFORM_CONFIG)) {
-          if (!merged[key] && (DEFAULT_PLATFORM_CONFIG as any)[key]) {
-            merged[key] = (DEFAULT_PLATFORM_CONFIG as any)[key];
-          }
-        }
-        return merged as PlatformConfigState;
-      } catch (e) {
-        console.error('Error loading config from storage:', e);
-      }
-    }
-    return DEFAULT_PLATFORM_CONFIG;
+  const [config, setConfig] = useState<ClientPlatformPreferences>(() => {
+    return loadSanitizedClientPreferences(DEFAULT_PLATFORM_CONFIG);
   });
 
   const [currency, setCurrency] = useState<CurrencyCode>(() => {
@@ -66,7 +61,7 @@ export default function App() {
       try {
         return JSON.parse(saved);
       } catch (e) {
-        console.error('Error loading logs from storage:', e);
+        safeLogger.error('Error loading logs from storage:', e);
       }
     }
     return [
@@ -112,13 +107,13 @@ export default function App() {
   const [syncingPlatform, setSyncingPlatform] = useState<PlatformId | null>(null);
   const [unreadLogsCount, setUnreadLogsCount] = useState(0);
 
-  // Persistence Effects
+  // Persistence Effects (Sanitized only, zero credentials)
   useEffect(() => {
     localStorage.setItem(LOCAL_STORAGE_CARDS_KEY, JSON.stringify(cards));
   }, [cards]);
 
   useEffect(() => {
-    localStorage.setItem(LOCAL_STORAGE_CONFIG_KEY, JSON.stringify(config));
+    saveSanitizedClientPreferences(config);
   }, [config]);
 
   useEffect(() => {
@@ -167,17 +162,18 @@ export default function App() {
       try {
         const res = await dispatchPlatformApi({
           platform: platform.id,
-          config,
           card,
           listingContent: card.generatedListings,
           action: 'post',
+          requestedMode: config.publishingMode,
         });
 
         updatedListings[platform.id] = {
-          status: 'synced',
+          status: res.success ? 'synced' : 'error',
           lastSyncedAt: new Date().toISOString(),
           listingId: res.listingId,
           responseData: res.payload,
+          error: res.error,
         };
 
         addLog({
@@ -185,7 +181,7 @@ export default function App() {
           cardTitle: card.title,
           platform: platform.id,
           action: 'create',
-          status: res.status === 'live_synced' ? 'success' : 'simulated',
+          status: res.mode === 'LIVE_PUBLISHING' && res.success ? 'success' : 'simulated',
           message: res.message || `Dispatched to ${platform.name}`,
           latencyMs: res.latencyMs,
         });
@@ -228,10 +224,10 @@ export default function App() {
     try {
       const res = await dispatchPlatformApi({
         platform: platformId,
-        config,
         card,
         listingContent: card.generatedListings,
         action: 'post',
+        requestedMode: config.publishingMode,
       });
 
       const updatedCard: CardItem = {
@@ -239,10 +235,11 @@ export default function App() {
         listings: {
           ...card.listings,
           [platformId]: {
-            status: 'synced',
+            status: res.success ? 'synced' : 'error',
             lastSyncedAt: new Date().toISOString(),
             listingId: res.listingId,
             responseData: res.payload,
+            error: res.error,
           },
         },
         updatedAt: new Date().toISOString(),
@@ -258,7 +255,7 @@ export default function App() {
         cardTitle: card.title,
         platform: platformId,
         action: 'create',
-        status: res.status === 'live_synced' ? 'success' : 'simulated',
+        status: res.mode === 'LIVE_PUBLISHING' && res.success ? 'success' : 'simulated',
         message: res.message || `Dispatched to ${platformId}`,
         latencyMs: res.latencyMs,
       });
@@ -297,16 +294,16 @@ export default function App() {
           try {
             const res = await dispatchPlatformApi({
               platform: platform.id,
-              config,
               card: updatedCard,
               action: 'update',
+              requestedMode: config.publishingMode,
             });
             addLog({
               cardId: card.id,
               cardTitle: card.title,
               platform: platform.id,
               action: 'update_price',
-              status: res.status === 'live_synced' ? 'success' : 'simulated',
+              status: res.mode === 'LIVE_PUBLISHING' && res.success ? 'success' : 'simulated',
               message: `Synced price update to $${newPrice} on ${platform.name}`,
               latencyMs: res.latencyMs,
             });
@@ -338,16 +335,16 @@ export default function App() {
           try {
             const res = await dispatchPlatformApi({
               platform: platform.id,
-              config,
               card: updatedCard,
               action: 'sold',
+              requestedMode: config.publishingMode,
             });
             addLog({
               cardId: card.id,
               cardTitle: card.title,
               platform: platform.id,
               action: 'mark_sold',
-              status: res.status === 'live_synced' ? 'success' : 'simulated',
+              status: res.mode === 'LIVE_PUBLISHING' && res.success ? 'success' : 'simulated',
               message: `Marked as SOLD on ${platform.name} and synced availability`,
               latencyMs: res.latencyMs,
             });
@@ -404,7 +401,7 @@ export default function App() {
   // Batch Bulk Import of multiple cards
   const handleBatchCardsAdded = (newCards: CardItem[], autoSync: boolean) => {
     setCards((prev) => [...newCards, ...prev]);
-    
+
     addLog({
       cardId: 'batch-import',
       cardTitle: `Batch of ${newCards.length} Cards`,

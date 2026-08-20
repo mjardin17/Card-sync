@@ -4,14 +4,15 @@ import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import {
   handleIdentifyCard,
-  handleGenerateMultiPlatformListings,
+  handleAppraiseComps,
+  handleGenerateListings,
   handleDispatchPlatform,
-  handleTestConnection,
 } from './src/services/apiHandler';
 import {
   handleGetVaultStatus,
   handleSaveCredentials,
   handleDisconnectPlatform,
+  handleVerifyPlatform,
   handleVerifyAll,
 } from './src/services/tokenVaultService';
 
@@ -30,26 +31,26 @@ async function startServer() {
     res.json({
       status: 'ok',
       hasGeminiApiKey: Boolean(process.env.GEMINI_API_KEY),
+      publishingMode: process.env.PUBLISHING_MODE || 'DRY_RUN',
       timestamp: new Date().toISOString(),
     });
   });
 
   // Collectible Card AI Appraisal & Identification API
   app.post('/api/identify-card', handleIdentifyCard);
+  app.post('/api/appraise-comps', handleAppraiseComps);
 
   // Multi-Platform Listing Generator API
-  app.post('/api/generate-listings', handleGenerateMultiPlatformListings);
+  app.post('/api/generate-listings', handleGenerateListings);
 
-  // Live Webhook & Dispatch Engine (Discord, Slack, Telegram, Custom Webhooks, Zapier)
+  // Live Webhook & Dispatch Engine
   app.post('/api/dispatch-platform', handleDispatchPlatform);
-
-  // Connection & Token Verification Endpoint
-  app.post('/api/test-connection', handleTestConnection);
 
   // Server-Side Token Vault & Account Connection Management
   app.get('/api/vault/status', handleGetVaultStatus);
   app.post('/api/vault/save-credentials', handleSaveCredentials);
   app.post('/api/vault/disconnect', handleDisconnectPlatform);
+  app.post('/api/vault/verify', handleVerifyPlatform);
   app.post('/api/vault/verify-all', handleVerifyAll);
 
   // Vite Middleware & SPA Handling

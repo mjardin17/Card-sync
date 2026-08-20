@@ -1,28 +1,10 @@
 import { Request, Response } from 'express';
-import { PlatformId, PlatformConnectionInfo, PlatformConfigState } from '../types/card';
+import { PlatformId, PlatformConnectionInfo } from '../types/card';
 import { PLATFORMS_LIST } from '../data/platforms';
+import { getDefaultVault } from './credentialVault';
+import { redactString, safeLogger } from '../utils/redact';
 
-interface ServerVaultStorage {
-  [key: string]: any;
-}
-
-// In-memory server-side secure vault storage
-const serverVault: Record<PlatformId, Record<string, string>> = {
-  ebay: {},
-  whatnot: {},
-  twitter: {},
-  reddit: {},
-  bluesky: {},
-  discord: {},
-  slack: {},
-  telegram: {},
-  zapier: {},
-  webhook: {},
-  mercari: {},
-  tcgplayer: {},
-};
-
-// Cached live verification results
+// In-memory cache of verified connection metadata (NON-SECRET ONLY)
 const verificationCache: Record<PlatformId, PlatformConnectionInfo> = {
   ebay: {
     status: 'NOT_CONNECTED',
@@ -129,12 +111,13 @@ const verificationCache: Record<PlatformId, PlatformConnectionInfo> = {
     status: 'MANUAL_EXPORT',
     authType: 'Manual Export',
     environment: 'production',
-    grantedScopes: ['manual_copy_export'],
+    accountName: 'Direct Clipboard Export',
+    storeOrChannel: 'Mercari Mobile App',
+    grantedScopes: ['clipboard.export'],
     refreshAvailable: false,
     readPermission: true,
     writePermission: false,
     listingPermission: false,
-    accountName: 'Direct Clipboard Export',
   },
   tcgplayer: {
     status: 'PARTNER_REQUIRED',
@@ -145,23 +128,73 @@ const verificationCache: Record<PlatformId, PlatformConnectionInfo> = {
     readPermission: false,
     writePermission: false,
     listingPermission: false,
-    lastError: 'Requires active TCGplayer Pro Seller Developer Authorization.',
+    lastError: 'Approved TCGplayer Pro Developer Partner authorization required.',
   },
 };
 
 /**
- * Perform genuine verification for a platform using its official API
+ * Verifies a platform's connection against official endpoints using stored credentials.
+ * Does NOT log or return secrets.
  */
 export async function verifyPlatformConnection(
   platform: PlatformId,
-  credentials: Record<string, string>
+  credentials?: Record<string, string> | null
 ): Promise<PlatformConnectionInfo> {
   const startTime = Date.now();
+  const vault = getDefaultVault();
+
+  // If credentials not passed directly, retrieve from encrypted server vault
+  let creds = credentials;
+  if (!creds) {
+    try {
+      creds = await vault.get(platform);
+    } catch (err: any) {
+      return {
+        status: 'ERROR',
+        authType: 'Developer API Key',
+        environment: 'production',
+        grantedScopes: [],
+        refreshAvailable: false,
+        readPermission: false,
+        writePermission: false,
+        listingPermission: false,
+        lastError: redactString(`Vault read failure: ${err.message}`),
+      };
+    }
+  }
+
+  if (!creds || Object.keys(creds).length === 0) {
+    const meta = PLATFORMS_LIST.find((p) => p.id === platform);
+    return {
+      status: meta?.defaultClassification || 'NOT_CONNECTED',
+      authType: (meta?.authCategory === 'OAUTH'
+        ? 'OAuth 2.0 (User PKCE)'
+        : meta?.authCategory === 'BOT_TOKEN'
+        ? 'Official Bot Token'
+        : meta?.authCategory === 'MANUAL_EXPORT'
+        ? 'Manual Export'
+        : meta?.authCategory === 'PARTNER_RESTRICTED'
+        ? 'Partner Authorization'
+        : 'Developer API Key') as any,
+      environment: 'production',
+      grantedScopes: meta?.id === 'mercari' ? ['clipboard.export'] : [],
+      refreshAvailable: false,
+      readPermission: meta?.id === 'mercari',
+      writePermission: false,
+      listingPermission: false,
+      lastError:
+        meta?.id === 'whatnot'
+          ? 'Approved Whatnot Seller Developer credentials required.'
+          : meta?.id === 'tcgplayer'
+          ? 'Approved TCGplayer Pro Developer Partner authorization required.'
+          : undefined,
+    };
+  }
 
   try {
     switch (platform) {
       case 'discord': {
-        const webhookUrl = credentials.discordWebhookUrl || credentials.webhookUrl;
+        const webhookUrl = creds.discordWebhookUrl || creds.webhookUrl;
         if (!webhookUrl) {
           return {
             status: 'NOT_CONNECTED',
@@ -176,9 +209,7 @@ export async function verifyPlatformConnection(
           };
         }
 
-        // Official Discord Webhook Verification
-        // Discord webhook URLs match https://discord.com/api/webhooks/{id}/{token}
-        const match = webhookUrl.match(/discord(?:app)?\.com\/api\/webhooks\/(\d+)\/([\w-]+)/i);
+        const match = webhookUrl.match(/discord(?:app)?\.com\/api\/webhooks\/(\d+)\/([A-Za-z0-9_\-]+)/);
         if (!match) {
           return {
             status: 'ERROR',
@@ -189,20 +220,19 @@ export async function verifyPlatformConnection(
             readPermission: false,
             writePermission: false,
             listingPermission: false,
-            lastError: 'Invalid Discord Webhook URL format. Expected https://discord.com/api/webhooks/{id}/{token}',
-            latencyMs: Date.now() - startTime,
+            lastError: 'Invalid Discord Webhook URL format.',
           };
         }
 
-        const [, webhookId, webhookToken] = match;
-        const res = await fetch(`https://discord.com/api/webhooks/${webhookId}/${webhookToken}`, {
+        const webhookId = match[1];
+        const res = await fetch(`https://discord.com/api/webhooks/${webhookId}/${match[2]}`, {
           method: 'GET',
-          headers: { 'Accept': 'application/json' },
+          headers: { Accept: 'application/json' },
         });
 
         const latency = Date.now() - startTime;
         if (res.ok) {
-          const data = await res.json();
+          const data: any = await res.json();
           return {
             status: 'VERIFIED',
             authType: 'Incoming Webhook',
@@ -210,16 +240,16 @@ export async function verifyPlatformConnection(
             accountId: data.id || webhookId,
             accountName: data.name ? `Webhook: ${data.name}` : `Webhook #${webhookId}`,
             storeOrChannel: data.channel_id ? `Channel ID: ${data.channel_id}` : undefined,
-            grantedScopes: ['webhooks:execute', 'bot'],
+            grantedScopes: ['webhooks:execute'],
             refreshAvailable: false,
             readPermission: true,
             writePermission: true,
             listingPermission: true,
+            evidenceSource: 'Discord Webhook GET Probe',
             lastVerifiedAt: new Date().toISOString(),
             latencyMs: latency,
           };
         } else {
-          const errData: any = await res.json().catch(() => ({ message: res.statusText }));
           return {
             status: 'ERROR',
             authType: 'Incoming Webhook',
@@ -229,15 +259,15 @@ export async function verifyPlatformConnection(
             readPermission: false,
             writePermission: false,
             listingPermission: false,
-            lastError: `Discord API returned ${res.status}: ${errData.message || res.statusText}`,
+            lastError: redactString(`Discord API returned ${res.status}: ${res.statusText}`),
             latencyMs: latency,
           };
         }
       }
 
       case 'telegram': {
-        const botToken = credentials.telegramBotToken || credentials.botToken;
-        const chatId = credentials.telegramChatId || credentials.chatId;
+        const botToken = creds.telegramBotToken || creds.botToken;
+        const chatId = creds.telegramChatId || creds.chatId;
 
         if (!botToken) {
           return {
@@ -253,7 +283,6 @@ export async function verifyPlatformConnection(
           };
         }
 
-        // Official Telegram getMe verification
         const res = await fetch(`https://api.telegram.org/bot${botToken}/getMe`);
         const latency = Date.now() - startTime;
         const data: any = await res.json().catch(() => ({ ok: false, description: res.statusText }));
@@ -266,12 +295,13 @@ export async function verifyPlatformConnection(
             environment: 'production',
             accountId: String(bot.id),
             accountName: `@${bot.username} (${bot.first_name})`,
-            storeOrChannel: chatId ? `Target Feed: ${chatId}` : 'Chat ID needed for broadcasting',
+            storeOrChannel: chatId ? `Target Feed: ${chatId}` : 'Chat ID needed for posting',
             grantedScopes: ['bot:sendMessage', 'bot:sendPhoto'],
             refreshAvailable: false,
             readPermission: true,
             writePermission: true,
             listingPermission: Boolean(chatId),
+            evidenceSource: 'Telegram getMe API',
             lastVerifiedAt: new Date().toISOString(),
             latencyMs: latency,
           };
@@ -285,15 +315,15 @@ export async function verifyPlatformConnection(
             readPermission: false,
             writePermission: false,
             listingPermission: false,
-            lastError: `Telegram API Error: ${data.description || 'Invalid Bot Token'}`,
+            lastError: redactString(`Telegram API Error: ${data.description || 'Invalid Bot Token'}`),
             latencyMs: latency,
           };
         }
       }
 
       case 'bluesky': {
-        const handle = credentials.blueskyHandle;
-        const appPassword = credentials.blueskyAppPassword;
+        const handle = creds.blueskyHandle;
+        const appPassword = creds.blueskyAppPassword;
 
         if (!handle || !appPassword) {
           return {
@@ -309,7 +339,6 @@ export async function verifyPlatformConnection(
           };
         }
 
-        // Official AT Protocol Create Session
         const sessionRes = await fetch('https://bsky.social/xrpc/com.atproto.server.createSession', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -334,6 +363,7 @@ export async function verifyPlatformConnection(
             readPermission: true,
             writePermission: true,
             listingPermission: true,
+            evidenceSource: 'AT Protocol Session JWT',
             lastVerifiedAt: new Date().toISOString(),
             latencyMs: latency,
           };
@@ -348,15 +378,15 @@ export async function verifyPlatformConnection(
             readPermission: false,
             writePermission: false,
             listingPermission: false,
-            lastError: `AT Protocol Error: ${errData.message || 'Authentication failed. Check handle and App Password.'}`,
+            lastError: redactString(`AT Protocol Auth Error: ${errData.message || 'Check handle and App Password.'}`),
             latencyMs: latency,
           };
         }
       }
 
       case 'ebay': {
-        const token = credentials.ebayDevToken || credentials.ebayUserToken;
-        const env = credentials.ebayEnvironment === 'sandbox' ? 'sandbox' : 'production';
+        const token = creds.ebayDevToken || creds.ebayUserToken;
+        const env = creds.ebayEnvironment === 'sandbox' ? 'sandbox' : 'production';
 
         if (!token) {
           return {
@@ -373,14 +403,11 @@ export async function verifyPlatformConnection(
         }
 
         const baseUrl = env === 'sandbox' ? 'https://api.sandbox.ebay.com' : 'https://api.ebay.com';
-        
-        // Official eBay Sell Account Privilege / User Check
         const res = await fetch(`${baseUrl}/sell/account/v1/privilege`, {
           method: 'GET',
           headers: {
-            'Authorization': `Bearer ${token}`,
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json',
           },
         });
 
@@ -393,21 +420,20 @@ export async function verifyPlatformConnection(
             environment: env,
             accountId: data.sellerRegistrationCompleted ? 'Seller Account (Active)' : 'eBay User',
             accountName: 'eBay Production Seller Account',
-            storeOrChannel: `Privilege: ${data.sellingLimit?.amount?.value ? '$' + data.sellingLimit.amount.value : 'Standard Seller'}`,
+            storeOrChannel: `Privilege: ${data.sellingLimit?.amount?.value ? '$' + data.sellingLimit.amount.value : 'Active Seller'}`,
             grantedScopes: [
               'https://api.ebay.com/oauth/api_scope/sell.inventory',
               'https://api.ebay.com/oauth/api_scope/sell.account',
             ],
-            refreshAvailable: Boolean(credentials.ebayRefreshToken),
+            refreshAvailable: Boolean(creds.ebayRefreshToken),
             readPermission: true,
             writePermission: true,
             listingPermission: true,
+            evidenceSource: 'eBay Sell Privilege Verification',
             lastVerifiedAt: new Date().toISOString(),
             latencyMs: latency,
           };
         } else {
-          const errData: any = await res.json().catch(() => ({}));
-          const errorMsg = errData.errors?.[0]?.message || `eBay API returned ${res.status}: ${res.statusText}`;
           return {
             status: 'ERROR',
             authType: 'OAuth 2.0 (User PKCE)',
@@ -417,14 +443,14 @@ export async function verifyPlatformConnection(
             readPermission: false,
             writePermission: false,
             listingPermission: false,
-            lastError: errorMsg,
+            lastError: redactString(`eBay API returned ${res.status}: ${res.statusText}`),
             latencyMs: latency,
           };
         }
       }
 
       case 'twitter': {
-        const bearerToken = credentials.twitterBearerToken || credentials.twitterAccessToken;
+        const bearerToken = creds.twitterBearerToken || creds.twitterAccessToken;
 
         if (!bearerToken) {
           return {
@@ -440,11 +466,10 @@ export async function verifyPlatformConnection(
           };
         }
 
-        // Official X API v2 User Identity Check
         const res = await fetch('https://api.twitter.com/2/users/me', {
           method: 'GET',
           headers: {
-            'Authorization': `Bearer ${bearerToken}`,
+            Authorization: `Bearer ${bearerToken}`,
           },
         });
 
@@ -459,16 +484,16 @@ export async function verifyPlatformConnection(
             accountId: user?.id,
             accountName: user?.username ? `@${user.username} (${user.name})` : 'Twitter Account',
             storeOrChannel: 'X Feed',
-            grantedScopes: ['tweet.read', 'tweet.write', 'users.read', 'offline.access'],
+            grantedScopes: ['tweet.read', 'tweet.write', 'users.read'],
             refreshAvailable: true,
             readPermission: true,
             writePermission: true,
             listingPermission: true,
+            evidenceSource: 'X API v2 User Identity',
             lastVerifiedAt: new Date().toISOString(),
             latencyMs: latency,
           };
         } else {
-          const errData: any = await res.json().catch(() => ({}));
           return {
             status: 'ERROR',
             authType: 'OAuth 2.0 (User PKCE)',
@@ -478,16 +503,16 @@ export async function verifyPlatformConnection(
             readPermission: false,
             writePermission: false,
             listingPermission: false,
-            lastError: errData.detail || errData.title || `Twitter API returned ${res.status}: ${res.statusText}`,
+            lastError: redactString(`Twitter API returned ${res.status}: ${res.statusText}`),
             latencyMs: latency,
           };
         }
       }
 
       case 'reddit': {
-        const clientId = credentials.redditClientId;
-        const clientSecret = credentials.redditSecret;
-        const accessToken = credentials.redditAccessToken;
+        const clientId = creds.redditClientId;
+        const clientSecret = creds.redditSecret;
+        const accessToken = creds.redditAccessToken;
 
         if (!clientId && !accessToken) {
           return {
@@ -504,10 +529,9 @@ export async function verifyPlatformConnection(
         }
 
         if (accessToken) {
-          // Verify with Bearer Token
           const res = await fetch('https://oauth.reddit.com/api/v1/me', {
             headers: {
-              'Authorization': `bearer ${accessToken}`,
+              Authorization: `bearer ${accessToken}`,
               'User-Agent': 'BossLister/1.0.0 (Collectible Card Sync)',
             },
           });
@@ -522,23 +546,23 @@ export async function verifyPlatformConnection(
               accountName: `u/${data.name}`,
               storeOrChannel: `Karma: ${data.total_karma || 0}`,
               grantedScopes: ['identity', 'submit', 'read'],
-              refreshAvailable: Boolean(credentials.redditRefreshToken),
+              refreshAvailable: Boolean(creds.redditRefreshToken),
               readPermission: true,
               writePermission: true,
               listingPermission: true,
+              evidenceSource: 'Reddit OAuth User Identity',
               lastVerifiedAt: new Date().toISOString(),
               latencyMs: latency,
             };
           }
         }
 
-        // Test App Credentials with Reddit OAuth endpoint
         if (clientId && clientSecret) {
           const authString = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
           const res = await fetch('https://www.reddit.com/api/v1/access_token', {
             method: 'POST',
             headers: {
-              'Authorization': `Basic ${authString}`,
+              Authorization: `Basic ${authString}`,
               'Content-Type': 'application/x-www-form-urlencoded',
               'User-Agent': 'BossLister/1.0.0 (Collectible Card Sync)',
             },
@@ -561,13 +585,13 @@ export async function verifyPlatformConnection(
                 readPermission: true,
                 writePermission: true,
                 listingPermission: true,
+                evidenceSource: 'Reddit App Client Credentials Token',
                 lastVerifiedAt: new Date().toISOString(),
                 latencyMs: latency,
               };
             }
           }
 
-          const errData: any = await res.json().catch(() => ({}));
           return {
             status: 'ERROR',
             authType: 'OAuth 2.0 (App)',
@@ -577,7 +601,7 @@ export async function verifyPlatformConnection(
             readPermission: false,
             writePermission: false,
             listingPermission: false,
-            lastError: `Reddit Auth Failed: ${errData.error || res.statusText}`,
+            lastError: redactString(`Reddit Auth Failed: ${res.statusText}`),
             latencyMs: latency,
           };
         }
@@ -596,7 +620,7 @@ export async function verifyPlatformConnection(
       }
 
       case 'slack': {
-        const webhookUrl = credentials.slackWebhookUrl || credentials.webhookUrl;
+        const webhookUrl = creds.slackWebhookUrl || creds.webhookUrl;
         if (!webhookUrl) {
           return {
             status: 'NOT_CONNECTED',
@@ -611,7 +635,6 @@ export async function verifyPlatformConnection(
           };
         }
 
-        // Validate Slack Webhook format: https://hooks.slack.com/services/T.../B.../...
         const isSlack = /hooks\.slack\.com\/services\/[A-Z0-9]+\/[A-Z0-9]+\/[A-Za-z0-9]+/i.test(webhookUrl);
         if (!isSlack) {
           return {
@@ -623,7 +646,7 @@ export async function verifyPlatformConnection(
             readPermission: false,
             writePermission: false,
             listingPermission: false,
-            lastError: 'Invalid Slack Incoming Webhook URL. Expected https://hooks.slack.com/services/...',
+            lastError: 'Invalid Slack Incoming Webhook URL format.',
             latencyMs: Date.now() - startTime,
           };
         }
@@ -639,13 +662,14 @@ export async function verifyPlatformConnection(
           readPermission: true,
           writePermission: true,
           listingPermission: true,
+          evidenceSource: 'Slack Validated Webhook URL Format',
           lastVerifiedAt: new Date().toISOString(),
           latencyMs: Date.now() - startTime,
         };
       }
 
       case 'zapier': {
-        const url = credentials.zapierWebhookUrl || credentials.webhookUrl;
+        const url = creds.zapierWebhookUrl || creds.webhookUrl;
         if (!url) {
           return {
             status: 'NOT_CONNECTED',
@@ -660,7 +684,8 @@ export async function verifyPlatformConnection(
           };
         }
 
-        const isZapier = /hooks\.zapier\.com\/hooks\/catch\/\d+\/[\w-]+/i.test(url) || /make\.com\/webhook/i.test(url);
+        const isZapier =
+          /hooks\.zapier\.com\/hooks\/catch\/\d+\/[\w-]+/i.test(url) || /make\.com\/webhook/i.test(url);
         if (!isZapier && !url.startsWith('https://')) {
           return {
             status: 'ERROR',
@@ -671,7 +696,7 @@ export async function verifyPlatformConnection(
             readPermission: false,
             writePermission: false,
             listingPermission: false,
-            lastError: 'Invalid Zapier Catch Hook URL. Expected https://hooks.zapier.com/hooks/catch/...',
+            lastError: 'Invalid Zapier Catch Hook URL.',
             latencyMs: Date.now() - startTime,
           };
         }
@@ -687,13 +712,14 @@ export async function verifyPlatformConnection(
           readPermission: true,
           writePermission: true,
           listingPermission: true,
+          evidenceSource: 'Zapier Validated Webhook Endpoint',
           lastVerifiedAt: new Date().toISOString(),
           latencyMs: Date.now() - startTime,
         };
       }
 
       case 'webhook': {
-        const url = credentials.customWebhookUrl || credentials.webhookUrl;
+        const url = creds.customWebhookUrl || creds.webhookUrl;
         if (!url) {
           return {
             status: 'NOT_CONNECTED',
@@ -718,7 +744,7 @@ export async function verifyPlatformConnection(
             readPermission: false,
             writePermission: false,
             listingPermission: false,
-            lastError: 'Destination webhook must use HTTPS for secure card event transmission.',
+            lastError: 'Destination webhook must use HTTPS for secure transmission.',
             latencyMs: Date.now() - startTime,
           };
         }
@@ -734,14 +760,15 @@ export async function verifyPlatformConnection(
           readPermission: true,
           writePermission: true,
           listingPermission: true,
+          evidenceSource: 'HTTPS Validated Webhook Endpoint',
           lastVerifiedAt: new Date().toISOString(),
           latencyMs: Date.now() - startTime,
         };
       }
 
       case 'whatnot': {
-        const apiKey = credentials.whatnotApiKey;
-        const username = credentials.whatnotSellerUsername;
+        const apiKey = creds.whatnotApiKey;
+        const username = creds.whatnotSellerUsername;
 
         if (!apiKey) {
           return {
@@ -758,9 +785,8 @@ export async function verifyPlatformConnection(
           };
         }
 
-        // Whatnot requires approved developer/seller access token
         const res = await fetch('https://api.whatnot.com/v1/user/me', {
-          headers: { 'Authorization': `Bearer ${apiKey}` },
+          headers: { Authorization: `Bearer ${apiKey}` },
         });
 
         const latency = Date.now() - startTime;
@@ -773,11 +799,12 @@ export async function verifyPlatformConnection(
             accountId: data.id,
             accountName: `@${data.username || username}`,
             storeOrChannel: 'Live Show Inventory Queue',
-            grantedScopes: ['seller:inventory', 'seller:livestream', 'seller:orders'],
+            grantedScopes: ['seller:inventory', 'seller:livestream'],
             refreshAvailable: false,
             readPermission: true,
             writePermission: true,
             listingPermission: true,
+            evidenceSource: 'Whatnot Seller Account Verification',
             lastVerifiedAt: new Date().toISOString(),
             latencyMs: latency,
           };
@@ -798,8 +825,8 @@ export async function verifyPlatformConnection(
       }
 
       case 'tcgplayer': {
-        const publicKey = credentials.tcgplayerPublicKey;
-        const privateKey = credentials.tcgplayerPrivateKey;
+        const publicKey = creds.tcgplayerPublicKey;
+        const privateKey = creds.tcgplayerPrivateKey;
 
         if (!publicKey || !privateKey) {
           return {
@@ -816,7 +843,6 @@ export async function verifyPlatformConnection(
           };
         }
 
-        // TCGplayer Developer Token Generation
         const res = await fetch('https://api.tcgplayer.com/token', {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -825,7 +851,6 @@ export async function verifyPlatformConnection(
 
         const latency = Date.now() - startTime;
         if (res.ok) {
-          const data: any = await res.json();
           return {
             status: 'VERIFIED',
             authType: 'Partner Authorization',
@@ -833,11 +858,12 @@ export async function verifyPlatformConnection(
             accountId: publicKey.slice(0, 10),
             accountName: 'TCGplayer Pro Seller Account',
             storeOrChannel: 'Pro Seller Catalog API',
-            grantedScopes: ['inventory:write', 'catalog:read', 'pricing:sync'],
+            grantedScopes: ['inventory:write', 'catalog:read'],
             refreshAvailable: true,
             readPermission: true,
             writePermission: true,
             listingPermission: true,
+            evidenceSource: 'TCGplayer Partner Token Verification',
             lastVerifiedAt: new Date().toISOString(),
             latencyMs: latency,
           };
@@ -851,7 +877,7 @@ export async function verifyPlatformConnection(
             readPermission: false,
             writePermission: false,
             listingPermission: false,
-            lastError: 'TCGplayer Developer API authorization failed. Check developer.tcgplayer.com credentials.',
+            lastError: 'TCGplayer Developer API authorization failed. Check developer.tcgplayer.com keys.',
             latencyMs: latency,
           };
         }
@@ -864,11 +890,12 @@ export async function verifyPlatformConnection(
           environment: 'production',
           accountName: 'Direct Clipboard Export',
           storeOrChannel: 'Mercari Mobile App',
-          grantedScopes: ['manual_copy_export'],
+          grantedScopes: ['clipboard.export'],
           refreshAvailable: false,
           readPermission: true,
           writePermission: false,
           listingPermission: false,
+          evidenceSource: 'Mercari Structured Clipboard Export System',
           lastVerifiedAt: new Date().toISOString(),
           latencyMs: Date.now() - startTime,
         };
@@ -896,7 +923,7 @@ export async function verifyPlatformConnection(
       readPermission: false,
       writePermission: false,
       listingPermission: false,
-      lastError: err.message || 'Verification network timeout.',
+      lastError: redactString(err.message || 'Verification network timeout.'),
       latencyMs: Date.now() - startTime,
     };
   }
@@ -904,44 +931,60 @@ export async function verifyPlatformConnection(
 
 /**
  * Handle GET /api/vault/status
+ * Returns sanitized metadata only. NEVER returns secrets.
  */
 export async function handleGetVaultStatus(req: Request, res: Response) {
-  return res.json({
-    success: true,
-    statuses: verificationCache,
-    timestamp: new Date().toISOString(),
-  });
+  try {
+    return res.json({
+      success: true,
+      statuses: verificationCache,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    safeLogger.error('Error fetching vault status:', err);
+    return res.status(500).json({ success: false, error: redactString(err.message) });
+  }
 }
 
 /**
  * Handle POST /api/vault/save-credentials
+ * Saves credentials to encrypted vault, verifies provider, and returns metadata only.
+ * NEVER echoes submitted credentials.
  */
 export async function handleSaveCredentials(req: Request, res: Response) {
   try {
-    const { platform, credentials } = req.body as { platform: PlatformId; credentials: Record<string, string> };
+    const { platform, credentials } = req.body as {
+      platform: PlatformId;
+      credentials: Record<string, string>;
+    };
 
     if (!platform || !credentials) {
       return res.status(400).json({ success: false, error: 'Platform and credentials are required.' });
     }
 
-    serverVault[platform] = { ...serverVault[platform], ...credentials };
+    const vault = getDefaultVault();
+    // Encrypt and persist to vault
+    await vault.set(platform, credentials);
 
-    // Run real verification
-    const verifiedStatus = await verifyPlatformConnection(platform, serverVault[platform]);
+    // Verify platform
+    const verifiedStatus = await verifyPlatformConnection(platform, credentials);
     verificationCache[platform] = verifiedStatus;
 
+    // Return sanitized metadata only
     return res.json({
       success: true,
       platform,
       connectionInfo: verifiedStatus,
     });
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
+    safeLogger.error('Error saving credentials:', err);
+    return res.status(500).json({ success: false, error: redactString(err.message) });
   }
 }
 
 /**
  * Handle POST /api/vault/disconnect
+ * Purges credentials from encrypted vault.
  */
 export async function handleDisconnectPlatform(req: Request, res: Response) {
   try {
@@ -951,17 +994,28 @@ export async function handleDisconnectPlatform(req: Request, res: Response) {
       return res.status(400).json({ success: false, error: 'Platform is required.' });
     }
 
-    serverVault[platform] = {};
+    const vault = getDefaultVault();
+    await vault.delete(platform);
+
     const defaultMeta = PLATFORMS_LIST.find((p) => p.id === platform);
     verificationCache[platform] = {
       status: defaultMeta?.defaultClassification || 'NOT_CONNECTED',
-      authType: (defaultMeta?.authCategory === 'OAUTH' ? 'OAuth 2.0 (User PKCE)' : 'Developer API Key') as any,
+      authType: (defaultMeta?.authCategory === 'OAUTH'
+        ? 'OAuth 2.0 (User PKCE)'
+        : defaultMeta?.authCategory === 'BOT_TOKEN'
+        ? 'Official Bot Token'
+        : defaultMeta?.authCategory === 'MANUAL_EXPORT'
+        ? 'Manual Export'
+        : defaultMeta?.authCategory === 'PARTNER_RESTRICTED'
+        ? 'Partner Authorization'
+        : 'Developer API Key') as any,
       environment: 'production',
-      grantedScopes: [],
+      grantedScopes: platform === 'mercari' ? ['clipboard.export'] : [],
       refreshAvailable: false,
-      readPermission: false,
+      readPermission: platform === 'mercari',
       writePermission: false,
       listingPermission: false,
+      lastError: undefined,
     };
 
     return res.json({
@@ -970,61 +1024,78 @@ export async function handleDisconnectPlatform(req: Request, res: Response) {
       connectionInfo: verificationCache[platform],
     });
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
+    safeLogger.error('Error disconnecting platform:', err);
+    return res.status(500).json({ success: false, error: redactString(err.message) });
+  }
+}
+
+/**
+ * Handle POST /api/vault/verify
+ * Verifies a single platform using server-stored credentials.
+ * Client does NOT supply credentials.
+ */
+export async function handleVerifyPlatform(req: Request, res: Response) {
+  try {
+    const { platform } = req.body as { platform: PlatformId };
+    if (!platform) {
+      return res.status(400).json({ success: false, error: 'Platform is required.' });
+    }
+
+    const verified = await verifyPlatformConnection(platform);
+    verificationCache[platform] = verified;
+
+    return res.json({
+      success: true,
+      platform,
+      connectionInfo: verified,
+    });
+  } catch (err: any) {
+    safeLogger.error(`Error verifying platform ${req.body?.platform}:`, err);
+    return res.status(500).json({ success: false, error: redactString(err.message) });
   }
 }
 
 /**
  * Handle POST /api/vault/verify-all
+ * Verifies all platforms using server-stored credentials.
+ * Client does NOT supply credentials.
  */
 export async function handleVerifyAll(req: Request, res: Response) {
-  const config = req.body.config as PlatformConfigState;
-  const results: Record<string, PlatformConnectionInfo> = {};
+  try {
+    const results: Record<string, PlatformConnectionInfo> = {};
 
-  for (const meta of PLATFORMS_LIST) {
-    const platformId = meta.id;
-    let creds: Record<string, string> = { ...serverVault[platformId] };
-
-    if (config) {
-      if (platformId === 'discord') creds.discordWebhookUrl = config.discordWebhookUrl;
-      if (platformId === 'telegram') {
-        creds.telegramBotToken = config.telegramBotToken;
-        creds.telegramChatId = config.telegramChatId;
-      }
-      if (platformId === 'bluesky') {
-        creds.blueskyHandle = config.blueskyHandle;
-        creds.blueskyAppPassword = config.blueskyAppPassword;
-      }
-      if (platformId === 'ebay') {
-        creds.ebayDevToken = config.ebayDevToken;
-        creds.ebayEnvironment = config.ebayEnvironment || 'production';
-      }
-      if (platformId === 'twitter') creds.twitterBearerToken = config.twitterBearerToken;
-      if (platformId === 'reddit') {
-        creds.redditClientId = config.redditClientId;
-        creds.redditSecret = config.redditSecret;
-      }
-      if (platformId === 'slack') creds.slackWebhookUrl = config.slackWebhookUrl;
-      if (platformId === 'zapier') creds.zapierWebhookUrl = config.zapierWebhookUrl;
-      if (platformId === 'webhook') creds.customWebhookUrl = config.customWebhookUrl;
-      if (platformId === 'whatnot') {
-        creds.whatnotApiKey = config.whatnotApiKey;
-        creds.whatnotSellerUsername = config.whatnotSellerUsername;
-      }
-      if (platformId === 'tcgplayer') {
-        creds.tcgplayerPublicKey = config.tcgplayerPublicKey || '';
-        creds.tcgplayerPrivateKey = config.tcgplayerPrivateKey || '';
-      }
+    for (const meta of PLATFORMS_LIST) {
+      const platformId = meta.id;
+      const verified = await verifyPlatformConnection(platformId);
+      verificationCache[platformId] = verified;
+      results[platformId] = verified;
     }
 
-    const verified = await verifyPlatformConnection(platformId, creds);
-    verificationCache[platformId] = verified;
-    results[platformId] = verified;
+    return res.json({
+      success: true,
+      results,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    safeLogger.error('Error verifying all platforms:', err);
+    return res.status(500).json({ success: false, error: redactString(err.message) });
   }
+}
 
-  return res.json({
-    success: true,
-    results,
-    timestamp: new Date().toISOString(),
-  });
+/**
+ * Direct lookup of cached verification info for server modules.
+ */
+export function getCachedConnectionInfo(platform: PlatformId): PlatformConnectionInfo {
+  return (
+    verificationCache[platform] || {
+      status: 'NOT_CONNECTED',
+      authType: 'Developer API Key',
+      environment: 'production',
+      grantedScopes: [],
+      refreshAvailable: false,
+      readPermission: false,
+      writePermission: false,
+      listingPermission: false,
+    }
+  );
 }

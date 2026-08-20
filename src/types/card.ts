@@ -83,7 +83,7 @@ export interface CardItem {
 }
 
 export interface PlatformConnectionInfo {
-  status: 'VERIFIED' | 'NOT_CONNECTED' | 'ERROR' | 'APPROVAL_REQUIRED' | 'PARTNER_REQUIRED' | 'MANUAL_EXPORT';
+  status: 'VERIFIED' | 'NOT_CONNECTED' | 'ERROR' | 'APPROVAL_REQUIRED' | 'PARTNER_REQUIRED' | 'MANUAL_EXPORT' | 'RECONNECT_REQUIRED';
   authType: 'OAuth 2.0 (User PKCE)' | 'OAuth 2.0 (App)' | 'AT Protocol Session' | 'Official Bot Token' | 'Incoming Webhook' | 'Developer API Key' | 'Partner Authorization' | 'Manual Export';
   environment: 'production' | 'sandbox';
   accountId?: string;
@@ -98,43 +98,27 @@ export interface PlatformConnectionInfo {
   lastVerifiedAt?: string | null;
   lastError?: string | null;
   latencyMs?: number;
+  evidenceSource?: string;
 }
 
-export interface PlatformConfigState {
+/**
+ * Sanitized client preferences stored in browser localStorage.
+ * Guaranteed to NEVER contain secrets or access tokens.
+ */
+export interface ClientPlatformPreferences {
   executionMode: 'real' | 'sandbox';
   publishingMode: 'DRY_RUN' | 'LIVE_PUBLISHING';
-  discordWebhookUrl: string;
-  slackWebhookUrl: string;
-  telegramBotToken: string;
-  telegramChatId: string;
-  ebayAppId: string;
-  ebayDevToken: string;
-  ebayRefreshToken?: string;
-  ebayEnvironment?: 'production' | 'sandbox';
-  whatnotApiKey: string;
-  whatnotSellerUsername: string;
-  whatnotLiveShowId: string;
-  twitterApiKey: string;
-  twitterBearerToken: string;
-  twitterAccessToken?: string;
-  twitterAccessSecret?: string;
-  redditClientId: string;
-  redditSecret: string;
-  redditAccessToken?: string;
-  redditRefreshToken?: string;
-  blueskyHandle: string;
-  blueskyAppPassword: string;
-  blueskyDid?: string;
-  customWebhookUrl: string;
-  zapierWebhookUrl: string;
-  tcgplayerPublicKey?: string;
-  tcgplayerPrivateKey?: string;
-  tcgplayerBearerToken?: string;
   autoSyncPriceChanges: boolean;
   autoSyncSoldStatus: boolean;
   platformsEnabled: Record<PlatformId, boolean>;
-  connectionStatuses?: Partial<Record<PlatformId, PlatformConnectionInfo>>;
+  connectionStatuses: Partial<Record<PlatformId, PlatformConnectionInfo>>;
 }
+
+/**
+ * Backwards-compatible alias for client-side configuration.
+ * Note: Secret fields have been eliminated from client state.
+ */
+export type PlatformConfigState = ClientPlatformPreferences;
 
 export interface SyncLogEntry {
   id: string;

@@ -1,4 +1,5 @@
-import { CardItem, PlatformConfigState, PlatformId } from '../types/card';
+import { CardItem, ClientPlatformPreferences, PlatformId } from '../types/card';
+import { safeLogger, redactString } from '../utils/redact';
 
 export async function identifyCardApi(params: {
   imageBase64?: string;
@@ -18,8 +19,7 @@ export async function identifyCardApi(params: {
     }
     return data.data;
   } catch (error: any) {
-    console.error('API call failed, fallback used:', error);
-    // If backend endpoint is unavailable, produce fallback mock
+    safeLogger.error('API call failed, fallback used:', error);
     return {
       title: params.cardHint ? `${params.cardHint} Identified` : 'Custom Collectible Card',
       category: 'pokemon',
@@ -64,9 +64,9 @@ export async function generateListingsApi(card: Partial<CardItem>, customInstruc
     if (!response.ok || !data.success) {
       throw new Error(data.error || 'Failed to generate listings');
     }
-    return data.data;
+    return data.listings || data.data;
   } catch (error: any) {
-    console.error('Listings API failed, using client builder:', error);
+    safeLogger.error('Listings API failed, using client builder:', error);
     const price = card.askingPrice || card.estimatedWorth?.fairMarketValue || 450;
     return {
       ebay: {
@@ -77,8 +77,8 @@ export async function generateListingsApi(card: Partial<CardItem>, customInstruc
         descriptionHtml: `<p><strong>${card.title}</strong></p><p>Graded: ${card.grader} ${card.gradeScore}. Shipped safely with tracking!</p>`,
         itemSpecifics: {
           'Card Name': card.title,
-          'Grade': card.gradeScore,
-          'Grader': card.grader,
+          Grade: card.gradeScore,
+          Grader: card.grader,
         },
       },
       discord: {
@@ -90,7 +90,7 @@ export async function generateListingsApi(card: Partial<CardItem>, customInstruc
           { name: '📊 Est. Value', value: `$${card.estimatedWorth?.fairMarketValue || price}`, inline: true },
           { name: '⭐ Grade', value: `${card.grader} ${card.gradeScore}`, inline: true },
         ],
-        footerText: 'OmniCard Sync',
+        footerText: 'BossLister Card Sync',
       },
       reddit: {
         title: `[US, US] [H] ${card.title} [W] $${price} PayPal G&S`,
@@ -122,25 +122,15 @@ export async function generateListingsApi(card: Partial<CardItem>, customInstruc
 
 export async function dispatchPlatformApi(params: {
   platform: PlatformId;
-  config: PlatformConfigState;
   card: CardItem;
   listingContent?: any;
   action?: 'post' | 'update' | 'sold';
+  requestedMode?: 'DRY_RUN' | 'LIVE_PUBLISHING';
 }) {
   const response = await fetch('/api/dispatch-platform', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
-  });
-
-  return await response.json();
-}
-
-export async function testConnectionApi(platform: PlatformId, config: PlatformConfigState) {
-  const response = await fetch('/api/test-connection', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ platform, config }),
   });
 
   return await response.json();
@@ -169,12 +159,20 @@ export async function disconnectPlatformApi(platform: PlatformId) {
   return await response.json();
 }
 
-export async function verifyAllPlatformsApi(config: PlatformConfigState) {
-  const response = await fetch('/api/vault/verify-all', {
+export async function verifyPlatformApi(platform: PlatformId) {
+  const response = await fetch('/api/vault/verify', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ config }),
+    body: JSON.stringify({ platform }),
   });
   return await response.json();
 }
 
+export async function verifyAllPlatformsApi() {
+  const response = await fetch('/api/vault/verify-all', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  return await response.json();
+}
